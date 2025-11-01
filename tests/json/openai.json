@@ -1,0 +1,116 @@
+{
+  "messages": [
+    {
+      "type": "HumanMessage",
+      "content": "what is the weather in beijing",
+      "additional_kwargs": {},
+      "response_metadata": {},
+      "id": "35220542-2cb9-4d3a-8e0a-c1942b71a904"
+    },
+    {
+      "type": "AIMessage",
+      "content": "",
+      "additional_kwargs": {
+        "refusal": null
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 60,
+          "total_tokens": 76,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          }
+        },
+        "model_provider": "openai",
+        "model_name": "gpt-4o-mini-2024-07-18",
+        "system_fingerprint": "fp_efad92c60b",
+        "id": "chatcmpl-CX0yLpDqx6dpoovrLgmVw1fbUGahA",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "id": "lc_run--a4e56276-bbc3-4749-aaab-6969feb6c56f-0",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Beijing"
+          },
+          "id": "call_pLIBoTVLfRKn0wfuAZk68yki",
+          "type": "tool_call"
+        }
+      ],
+      "usage_metadata": {
+        "input_tokens": 60,
+        "output_tokens": 16,
+        "total_tokens": 76,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 0
+        }
+      }
+    },
+    {
+      "type": "ToolMessage",
+      "content": "It's always sunny in Beijing!",
+      "name": "get_weather",
+      "id": "ecf3805e-5fbd-45dd-9af1-f5d8df669040",
+      "tool_call_id": "call_pLIBoTVLfRKn0wfuAZk68yki"
+    },
+    {
+      "type": "AIMessage",
+      "content": "The weather in Beijing is sunny!",
+      "additional_kwargs": {
+        "refusal": null
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 9,
+          "prompt_tokens": 89,
+          "total_tokens": 98,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          }
+        },
+        "model_provider": "openai",
+        "model_name": "gpt-4o-mini-2024-07-18",
+        "system_fingerprint": "fp_efad92c60b",
+        "id": "chatcmpl-CX0yLxovpBKZ5nnS6ycajcDGJd9QZ",
+        "finish_reason": "stop",
+        "logprobs": null
+      },
+      "id": "lc_run--ae169263-3fbe-4ea0-9a04-21ff94cd8264-0",
+      "usage_metadata": {
+        "input_tokens": 89,
+        "output_tokens": 9,
+        "total_tokens": 98,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 0
+        }
+      }
+    }
+  ]
+}
