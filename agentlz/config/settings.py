@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     model_temperature: float = Field(default=0.0, env="MODEL_TEMPERATURE")
     system_prompt: str = Field(default="You are a helpful assistant.", env="SYSTEM_PROMPT")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    # search
+    bing_api_key: str | None = Field(default=None, env="BING_API_KEY")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -45,4 +45,3 @@ def get_thesis_info(query: str) -> ThesisResponse:
             citations=result.get("citations")
         )
     
-    raise ValueError(f"Unexpected response format from thesis agent: {result}")

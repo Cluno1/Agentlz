@@ -1,14 +1,14 @@
 import typer
 
-from ..agents.simple_agent import ask
+from ..agents.markdown_agent import ask
 
 
-app = typer.Typer(help="Simple LangChain agent demo CLI")
+app = typer.Typer(help="Markdown conversion agent CLI")
 
 
 @app.command()
 def query(message: str):
-    """Send a prompt to the agent and print the response."""
+    """Send input (URL, file path, or query) to the agent and print Markdown."""
     response = ask(message)
     print(response)
 
