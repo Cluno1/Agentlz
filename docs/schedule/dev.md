@@ -1,6 +1,6 @@
-我已梳理入口与编排结构；现在已添加一个最小可执行的总调度 agent，并挂到 HTTP 路由。
+# 我已梳理入口与编排结构；现在已添加一个最小可执行的总调度 agent，并挂到 HTTP 路由。
 
-新增内容
+## 新增内容
 
 - 新增 agentlz/agents/schedule_1_agent.py
   - 读取 agent_tables/plan.py 、 check.py 、 tools.py 的可信度表；
@@ -15,7 +15,7 @@
   - agentlz/agent_tables/schedule.py 预留 SCHEDULE_AGENTS （本次未使用）
 - 暴露 FastAPI 路由
   - 在 agentlz/app/http_langserve.py 增加 add_routes(..., path="/agents/schedule_1")
-使用方式
+## 使用方式
 
 - 启动 HTTP 服务（示例）
   - 安装 uvicorn 后运行： uvicorn agentlz.app.http_langserve:app --port 8000
@@ -24,7 +24,7 @@
   - 返回字符串摘要，包含状态、所选 plan、工具候选与步骤数等。
 - 程序内调用
   - from agentlz.agents.schedule_1_agent import query; print(query("你的业务输入"))
-可信度表格式
+## 可信度表格式
 
 - 当前位置默认空表；如需启用调度，请在如下文件填入 MCP Agent 信息（越高 trust 越优先）：
 - agentlz/agent_tables/plan.py
@@ -33,7 +33,7 @@
   - CHECK_AGENTS = [{"id": "checker_mcp_1", "trust": 90, "endpoint": "stdio://..."}]
 - agentlz/agent_tables/tools.py
   - TOOLS_AGENTS = [{"id": "tool_mcp_1", "trust": 85, "endpoint": "stdio://..."}]
-工作逻辑
+## 工作逻辑
 
 - 按文档要求：优先选用 plan 可信度最高的 MCP；输出规范（最小化骨架）：
   - 步骤 1：根据规范调用第一个工具（占位，不实际远程调用）
@@ -41,7 +41,7 @@
 - 空表处理：
   - plan 空 → status = "no_plan_agents" ，不执行调用
   - tools 或 check 空 → status = "missing_tools_or_checks" ，仅输出骨架
-说明与后续
+## 后续工作
 
 - 当前实现为“最小可执行版本”，仅输出规范与骨架；未集成 MCP 客户端的真实远程调用。
 - 下一步可按 endpoint 接入 MCP 客户端（例如 STDIO/HTTP），完成：

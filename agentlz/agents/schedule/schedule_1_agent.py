@@ -27,14 +27,15 @@ class Schedule1Agent:
 
     基本职责：
     - 读取 plan/check/tools 的可信度表（MCP）。
-    - 若表为空（无可用 Agent），则直接返回提示，不执行任何调用。
+    - 若表为空（无可用 Agent），则自己做判断,根据用户查询内容返回思考结果.
     - 若存在可用的 plan agent，则给出最小化的调度计划骨架与候选工具/检查列表（不实际远程调用）。
     """
 
     def __init__(self) -> None:
         settings = get_settings()
+        self.settings = settings
         self.logger = setup_logging(settings.log_level)
-        self.model = get_model(settings)  # 预留：后续可用于 LLM 汇总
+        self.model = get_model(settings)  # 用于 LLM 汇总
 
     @staticmethod
     def _select_top(agents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -45,6 +46,49 @@ class Schedule1Agent:
     @staticmethod
     def _sort_by_trust(agents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return sorted(agents, key=lambda x: x.get("trust", 0), reverse=True)
+
+    def _llm_summarize(
+        self,
+        query: str,
+        status: str,
+        plan_id: Optional[str],
+        tools_ids: List[str],
+        check_ids: List[str],
+        steps: List[PlanStep],
+        extra_notes: Optional[str] = None,
+    ) -> str:
+        from langchain.agents import create_agent
+        # Fallback 简述
+        fallback = (
+            f"状态: {status}；Plan: {plan_id or '无'}；Tools: {tools_ids or []}；"
+            f"Checks: {check_ids or []}；步骤数: {len(steps or [])}。"
+        )
+        if self.model is None:
+            return fallback + (f"备注: {extra_notes}" if extra_notes else "")
+        agent = create_agent(
+            model=self.model,
+            tools=[],
+            system_prompt=self.settings.system_prompt,
+        )
+        # 构造汇总输入
+        context = {
+            "query": query,
+            "status": status,
+            "selected_plan_agent_id": plan_id,
+            "selected_tools_agent_ids": tools_ids,
+            "selected_check_agent_ids": check_ids,
+            "steps": [s.model_dump() for s in (steps or [])],
+            "notes": extra_notes or "",
+        }
+        result: Any = agent.invoke({"messages": [{"role": "user", "content": str(context)}]})
+        if isinstance(result, dict):
+            return (
+                result.get("output")
+                or result.get("final_output")
+                or result.get("structured_response")
+                or fallback
+            )
+        return str(result) if result else fallback
 
     def execute(self, query: str) -> ScheduleResponse:
         """执行调度流程（最小化版本）。
@@ -59,6 +103,15 @@ class Schedule1Agent:
         top_plan = self._select_top(PLAN_AGENTS)
         if not top_plan:
             self.logger.info("没有可用的 Plan MCP Agent（plan 可信度表为空）")
+            final_summary = self._llm_summarize(
+                query=query,
+                status="no_plan_agents",
+                plan_id=None,
+                tools_ids=[],
+                check_ids=[],
+                steps=[],
+                extra_notes="未检测到规划代理，进行基础判断与总结。",
+            )
             return ScheduleResponse(
                 query=query,
                 status="no_plan_agents",
@@ -66,7 +119,7 @@ class Schedule1Agent:
                 selected_tools_agent_ids=[],
                 steps=[],
                 check_passed=None,
-                final_summary="plan 可信度表为空，未执行任何调用。",
+                final_summary=final_summary,
             )
 
         # 2) 整理 tools/check 候选（按可信度降序）
@@ -98,7 +151,16 @@ class Schedule1Agent:
                 msg.append("tools 可信度表为空")
             if len(check_candidates) == 0:
                 msg.append("check 可信度表为空")
-            final_summary = "，".join(msg) + "，仅输出计划骨架，不执行远程调用。"
+            extra = "，".join(msg) + "。仅输出计划骨架。"
+            final_summary = self._llm_summarize(
+                query=query,
+                status="missing_tools_or_checks",
+                plan_id=top_plan.get("id"),
+                tools_ids=selected_tool_ids,
+                check_ids=selected_check_ids,
+                steps=plan_steps,
+                extra_notes=extra,
+            )
             return ScheduleResponse(
                 query=query,
                 status="missing_tools_or_checks",

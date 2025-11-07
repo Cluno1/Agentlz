@@ -2,9 +2,9 @@ from typing import Any
 
 from langchain.agents import create_agent
 
-from ..config.settings import get_settings
-from ..core.model_factory import get_model
-from ..tools.email import send_email
+from agentlz.config.settings import get_settings
+from agentlz.core.model_factory import get_model
+from agentlz.tools.email import send_email
 
 MAIL_SYSTEM_PROMPT = """你是一个邮件助手。接收用户的内容与收件人地址。
 当需要发送邮件时，调用工具 send_email(content, to_email)。
