@@ -5,7 +5,7 @@
 ## 环境搭建
 
 ```bash
- 创建环境：python3 -m venv .venv
+ 创建环境：python -m venv .venv
 
  激活环境（Linux/Mac）：source .venv/bin/activate
  激活环境（Windows）：.\.venv\Scripts\activate
@@ -14,7 +14,7 @@
 
  设置.env 环境变量
 
- 启动:  python -m agentlz.app.cli query "your input here"
+ 启动:  uvicorn agentlz.app.http_langserve:app --port 8000
 ```
 
 ```bash

@@ -124,7 +124,7 @@ tzdata==2025.2
 urllib3==2.5.0
 uvicorn==0.38.0
 virtualenv==20.35.4
-xattr==1.3.0
+xattr==1.3.0; sys_platform != "win32"
 xlrd==2.0.2
 xlsxwriter==3.2.9
 xxhash==3.6.0
