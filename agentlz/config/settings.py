@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     smtp_ssl_port: int = Field(default=465, env="SMTP_SSL_PORT")
     imap_host: str = Field(default="imap.163.com", env="IMAP_HOST")
     # model
-    model_name: str = Field(default="glm-4.5", env="MODEL_NAME")
+    model_name: str = Field(default=None, env="MODEL_NAME")
     model_temperature: float = Field(default=0.0, env="MODEL_TEMPERATURE")
     system_prompt: str = Field(default="You are a helpful assistant.", env="SYSTEM_PROMPT")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

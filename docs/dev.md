@@ -6,14 +6,70 @@
 
 ## 当前目标
 
-1. 企业用户可以在本平台开发 check agent, plan agent, tools agent,这些agent都开放的mcp接口, 可以被其他agent 远程调用,即开发类似插件模式
-2. 目前需要开发一个总调度agent,这个agent开放fastapi接口, 里面有一个固定的流程:
-   - 接收用户输入
-   - 大模型llm 根据agent_tables的plan可信度表优先使用最高可信度的plan agent(mcp), plan agent是思考用户需求,规范调度agent的如何去思考,有可能输出一个check list清单或者是每一步具体的执行大纲;给到总调度agent,总调度agent再综合判断怎么做;
-   - 使用plan agent分析用户输入,可能是输出check list清单,规范调度agent需要: a.按顺序执行调用哪些(tools agent,注意,这里输出同类型tools agent 的id集合,需要先调用第一个tool agent),b.传入怎么样的合理参数,c.执行该tool agent的目标,预期大概输出, d.使用check agent检查是否符合预期和目标,e,如果不符合,需要调用tools agent其他tool agent,知道符合check agent检查;
-   - 总调度agent 根据 plan agent的规范, 按顺序调用tools agent和check agent;
-   - llm 汇总所有的情况
-   - 返回响应给用户
+1. **Agent 即服务 (Agent as a Service)**: 企业用户可以在本平台开发 `check`, `plan`, `tools` 类型的 Agent。这些 Agent 都通过 MCP (Multi-Agent Communication Protocol) 协议开放接口，可以被其他 Agent 远程调用，实现类似插件的模式。
+
+2. **智能调度 Agent (Intelligent Schedule Agent)**: 开发一个总调度 Agent (`schedule_agent`)，它作为整个系统的“智能指挥官”。这个 Agent 开放 FastAPI 接口，其核心逻辑由一个强大的 LLM 和一个精心设计的“主提示词 (Master Prompt)”驱动，而非固定的代码流程。
+
+### 智能调度 Agent 的核心工作流
+
+```mermaid
+graph TD
+    A[用户输入] --> B[plan_agent<br/>生成执行计划];
+
+    subgraph execute_agent [execute agent 执行器]
+        direction LR
+        C[接收计划] --> D[遍历计划步骤];
+        D --> E{还有未执行步骤?};
+        E -- 是 --> F[调用 tools agent];
+        F --> G[获得工具输出];
+        G --> H[调用 check agent 验证];
+        H --> I{验证通过?};
+        I -- 通过 --> D;
+        I -- 不通过 --> J{可重试/换工具?};
+        J -- 是 --> F;
+        J -- 否 --> K[返回执行失败];
+           
+    E -- 否 --> L[汇总结果];  
+    L --> O[ check agent]; 
+    
+        
+    end
+
+    B --> C;
+    K -- 失败 --> B;
+    O -- 否 --> B;
+    
+
+    O -- 是 --> M[输出最终答案给用户];
+```
+
+`execute_agent` 的工作流程被设计成一个高度灵活、由模型驱动的“思考-行动”循环：
+
+1. **接收用户输入**: `execute_agent` 接收到用户的原始请求。
+
+2. **动态规划 (Planning)**:
+    - **首选 `plan` Agent**: `execute_agent` 会首先调用一个名为 `call_plan_agent` 的内部工具。该工具会根据 `agent_tables` 中的可信度表，选择并执行最高可信度的 `plan` Agent (MCP)。`plan` Agent 的职责是进行头脑风暴，将用户模糊的需求分解成一个清晰、可执行的步骤序列（即 Plan）。
+    - **自我规划 (Self-Planning)**: 如果 `plan` Agent 的可信度表为空（即没有可用的 `plan` Agent），`call_plan_agent` 工具会无缝切换到“自我规划”模式。在此模式下，`execute_agent` 会利用自身的 LLM 和一个内置的规划提示词，自主生成执行计划。这个过程对上层逻辑是透明的。
+
+3. **执行与验证循环 (Execution-Validation Loop)**:
+    - `execute_agent` 会遵循生成的计划，逐一执行每个步骤。
+    - **调用工具 (`tools` Agent)**: 对于需要使用工具的步骤，`execute_agent` 会调用 `call_tool_agent` 工具，该工具负责执行指定的 `tools` Agent (MCP)。
+    - **立即验证 (`check` Agent)**: 每个 `tools` Agent 执行完毕后，`execute_agent` 会**立即**调用 `call_check_agent` 工具，对前一步的输出结果进行验证。`check` Agent 负责判断结果是否符合预期、是否准确、是否满足任务要求。
+    - **智能错误处理**:
+        - 如果 `check` Agent 返回失败或不满意的结果，`execute_agent` 的 LLM 会被触发进行“反思”。它会分析失败的原因，并自主决定下一步行动：是使用不同的参数重试当前工具，还是选择一个备用的 `tools` Agent，甚至是重新调用 `plan` Agent 来修正整个计划。
+        - 如果 `check` Agent 的可信度表为空，`call_check_agent` 工具会默认返回“成功”，但 `execute_agent` 的主提示词会指导它在这种情况下，需要自行评估工具输出的合理性。
+
+4. **最终验证与汇总**:
+    - 当所有计划步骤都成功执行后, `execute_agent` 会对所有步骤的执行结果进行一次最终的汇总。
+    - **最终检验 (`check` Agent)**: 汇总结果会被提交给 `call_check_agent` 工具进行最终的全局验证，以确保整个任务的最终结果是完整、连贯且符合用户最高预期的。
+    - **失败则重规划**: 如果最终的 `check` Agent 返回失败，`execute_agent` 将返回到**动态规划**阶段，重新生成或修正计划。
+
+5. **生成响应**:
+    - 只有当最终验证通过后，`execute_agent` 才会生成最终的、条理清晰的答案，并通过 `ScheduleResponse` 结构返回给用户。该响应结构会包含详细的中间步骤（`intermediate_steps`），以 `AgentStep` 的形式记录了每一次思考和工具调用的过程，提供了极高的透明度。
+
+6. **规范化**:
+    - 每一个函数都需要有中文注释，清晰说明其作用、参数、返回值和可能引发的异常。
+    - 所有 Agent 或 MCP 的提示词都必须存放在 `agentlz/prompts/` 目录下，并使用中文编写。
 
 ### 适用范围
 
@@ -45,7 +101,7 @@
   - `logger.py`、`model_factory.py` 等。
 - `agentlz/config/`：配置管理（统一读取 `.env`，集中验证与默认值）。
   - `settings.py`：集中配置入口。
-- `agent_tables/*.py`：定义可信度表,  每一个文件对应一个可信度表,里面存储所有可用的 agent(macp)的配置, 每个 agent 有一个可信度(1-100), 可信度越高, 就越可能被调用.
+- `agent_tables/*.py`：定义可信度表, 每一个文件对应一个可信度表,里面存储所有可用的 agent(macp)的配置, 每个 agent 有一个可信度(1-100), 可信度越高, 就越可能被调用.
 - `tests/`：测试（单元与集成，按包名对齐）。
 - `scripts/`：开发运维脚本（lint、test、format、publish）。
 - `docs/`：文档（架构说明、接口约定、运行与运维指南）。
@@ -113,7 +169,7 @@
 - SQLite：存储文档元数据、租户信息、任务状态与审计日志；通过迁移工具维护表结构（推荐 Alembic）。
 - Chroma：向量存储用于检索增强；按租户/Agent 进行命名空间隔离；持久化目录由 `CHROMA_PERSIST_DIR` 管理。
 - 模型：统一在 `schemas/*` 中定义数据模型；避免跨层直接访问 DB，使用服务层封装。
-- 生命周期：文档从上传→入库→切分→嵌入→入向量库→可检索；支持版本化与撤销（软删除）。
+- 生命周期：文档从上传 → 入库 → 切分 → 嵌入 → 入向量库 → 可检索；支持版本化与撤销（软删除）。
 
 ---
 
