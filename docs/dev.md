@@ -12,25 +12,62 @@
 
 ### 智能调度 Agent 的核心工作流
 
-`schedule_agent` 的工作流程被设计成一个高度灵活、由模型驱动的“思考-行动”循环：
+```mermaid
+graph TD
+    A[用户输入] --> B[plan_agent<br/>生成执行计划];
 
-1. **接收用户输入**: `schedule_agent` 接收到用户的原始请求。
+    subgraph execute_agent [execute agent 执行器]
+        direction LR
+        C[接收计划] --> D[遍历计划步骤];
+        D --> E{还有未执行步骤?};
+        E -- 是 --> F[调用 tools agent];
+        F --> G[获得工具输出];
+        G --> H[调用 check agent 验证];
+        H --> I{验证通过?};
+        I -- 通过 --> D;
+        I -- 不通过 --> J{可重试/换工具?};
+        J -- 是 --> F;
+        J -- 否 --> K[返回执行失败];
+           
+    E -- 否 --> L[汇总结果];  
+    L --> O[ check agent]; 
+    
+        
+    end
+
+    B --> C;
+    K -- 失败 --> B;
+    O -- 否 --> B;
+    
+
+    O -- 是 --> M[输出最终答案给用户];
+```
+
+`execute_agent` 的工作流程被设计成一个高度灵活、由模型驱动的“思考-行动”循环：
+
+1. **接收用户输入**: `execute_agent` 接收到用户的原始请求。
 
 2. **动态规划 (Planning)**:
-    - **首选 `plan` Agent**: `schedule_agent` 会首先调用一个名为 `call_plan_agent` 的内部工具。该工具会根据 `agent_tables` 中的可信度表，选择并执行最高可信度的 `plan` Agent (MCP)。`plan` Agent 的职责是进行头脑风暴，将用户模糊的需求分解成一个清晰、可执行的步骤序列（即 Plan）。
-    - **自我规划 (Self-Planning)**: 如果 `plan` Agent 的可信度表为空（即没有可用的 `plan` Agent），`call_plan_agent` 工具会无缝切换到“自我规划”模式。在此模式下，`schedule_agent` 会利用自身的 LLM 和一个内置的规划提示词，自主生成执行计划。这个过程对上层逻辑是透明的。
+    - **首选 `plan` Agent**: `execute_agent` 会首先调用一个名为 `call_plan_agent` 的内部工具。该工具会根据 `agent_tables` 中的可信度表，选择并执行最高可信度的 `plan` Agent (MCP)。`plan` Agent 的职责是进行头脑风暴，将用户模糊的需求分解成一个清晰、可执行的步骤序列（即 Plan）。
+    - **自我规划 (Self-Planning)**: 如果 `plan` Agent 的可信度表为空（即没有可用的 `plan` Agent），`call_plan_agent` 工具会无缝切换到“自我规划”模式。在此模式下，`execute_agent` 会利用自身的 LLM 和一个内置的规划提示词，自主生成执行计划。这个过程对上层逻辑是透明的。
 
 3. **执行与验证循环 (Execution-Validation Loop)**:
-    - `schedule_agent` 会遵循生成的计划，逐一执行每个步骤。
-    - **调用工具 (`tools` Agent)**: 对于需要使用工具的步骤，`schedule_agent` 会调用 `call_tool_agent` 工具，该工具负责执行指定的 `tools` Agent (MCP)。
-    - **立即验证 (`check` Agent)**: 每个 `tools` Agent 执行完毕后，`schedule_agent` 会**立即**调用 `call_check_agent` 工具，对前一步的输出结果进行验证。`check` Agent 负责判断结果是否符合预期、是否准确、是否满足任务要求。
+    - `execute_agent` 会遵循生成的计划，逐一执行每个步骤。
+    - **调用工具 (`tools` Agent)**: 对于需要使用工具的步骤，`execute_agent` 会调用 `call_tool_agent` 工具，该工具负责执行指定的 `tools` Agent (MCP)。
+    - **立即验证 (`check` Agent)**: 每个 `tools` Agent 执行完毕后，`execute_agent` 会**立即**调用 `call_check_agent` 工具，对前一步的输出结果进行验证。`check` Agent 负责判断结果是否符合预期、是否准确、是否满足任务要求。
     - **智能错误处理**:
-        - 如果 `check` Agent 返回失败或不满意的结果，`schedule_agent` 的 LLM 会被触发进行“反思”。它会分析失败的原因，并自主决定下一步行动：是使用不同的参数重试当前工具，还是选择一个备用的 `tools` Agent，甚至是重新调用 `plan` Agent 来修正整个计划。
-        - 如果 `check` Agent 的可信度表为空，`call_check_agent` 工具会默认返回“成功”，但 `schedule_agent` 的主提示词会指导它在这种情况下，需要自行评估工具输出的合理性。
+        - 如果 `check` Agent 返回失败或不满意的结果，`execute_agent` 的 LLM 会被触发进行“反思”。它会分析失败的原因，并自主决定下一步行动：是使用不同的参数重试当前工具，还是选择一个备用的 `tools` Agent，甚至是重新调用 `plan` Agent 来修正整个计划。
+        - 如果 `check` Agent 的可信度表为空，`call_check_agent` 工具会默认返回“成功”，但 `execute_agent` 的主提示词会指导它在这种情况下，需要自行评估工具输出的合理性。
 
-4. **汇总与响应**: 当所有计划步骤都成功执行并通过验证后，`schedule_agent` 会汇总整个过程（包括中间的思考、工具调用、验证和修正），生成一个最终的、条理清晰的答案，并通过 `ScheduleResponse` 结构返回给用户。该响应结构会包含详细的中间步骤（`intermediate_steps`），以 `AgentStep` 的形式记录了每一次思考和工具调用的过程，提供了极高的透明度。
+4. **最终验证与汇总**:
+    - 当所有计划步骤都成功执行后, `execute_agent` 会对所有步骤的执行结果进行一次最终的汇总。
+    - **最终检验 (`check` Agent)**: 汇总结果会被提交给 `call_check_agent` 工具进行最终的全局验证，以确保整个任务的最终结果是完整、连贯且符合用户最高预期的。
+    - **失败则重规划**: 如果最终的 `check` Agent 返回失败，`execute_agent` 将返回到**动态规划**阶段，重新生成或修正计划。
 
-5. **规范化**:
+5. **生成响应**:
+    - 只有当最终验证通过后，`execute_agent` 才会生成最终的、条理清晰的答案，并通过 `ScheduleResponse` 结构返回给用户。该响应结构会包含详细的中间步骤（`intermediate_steps`），以 `AgentStep` 的形式记录了每一次思考和工具调用的过程，提供了极高的透明度。
+
+6. **规范化**:
     - 每一个函数都需要有中文注释，清晰说明其作用、参数、返回值和可能引发的异常。
     - 所有 Agent 或 MCP 的提示词都必须存放在 `agentlz/prompts/` 目录下，并使用中文编写。
 
