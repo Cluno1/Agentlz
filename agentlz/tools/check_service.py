@@ -27,4 +27,5 @@ def check(check_input: CheckInput) -> CheckOutput:
     return result
 
 if __name__ == "__main__":
+    print("[DEBUG] 即将以 streamable-http 模式启动 FastMCP……")
     mcp.run(transport="streamable-http")

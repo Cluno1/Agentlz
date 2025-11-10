@@ -74,51 +74,6 @@ class CheckOutput(BaseModel):
 5.  **绑定输出格式**: 使用 LangChain 的 `.with_structured_output()` 方法，将 `CheckOutput` Pydantic 模型与 LLM 绑定。这能确保 LLM 的输出始终是合法的 JSON，并能被自动解析为 `CheckOutput` 对象。
 6.  **创建 Chain**: 将提示词、LLM 和输出解析器组合成一个可执行的 LangChain Expression Language (LCEL) 链。
 
-### 示例代码片段
-
-```python
-# file: agentlz/agents/check/check_agent.py
-
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable
-from agentlz.core.model_factory import get_model
-from agentlz.schemas.check import CheckInput, CheckOutput
-from agentlz.prompts import CHECK_PROMPT # 假设从 __init__.py 导入
-
-def get_check_agent() -> Runnable[CheckInput, CheckOutput]:
-    """
-    构建并返回一个 Check Agent。
-
-    该 Agent 接收一个 CheckInput 对象，返回一个 CheckOutput 对象。
-    它使用 LLM 来判断 factMsg 是否成功实现了 objectMsg 的目标。
-    """
-    # 1. 获取模型，并绑定输出结构
-    llm = get_model()
-    structured_llm = llm.with_structured_output(CheckOutput)
-
-    # 2. 创建提示词模板
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", CHECK_PROMPT),
-        ("human", "目标 (Object): 
-```{objectMsg}```
-
-事实 (Fact): 
-```{factMsg}```"),
-    ])
-
-    # 3. 构建 LCEL 链
-    #    输入格式为 {"objectMsg": "...", "factMsg": "..."}
-    #    这会自动映射到 CheckInput 模型
-    chain = prompt | structured_llm
-
-    return chain
-
-# 可以在 app 中这样调用
-# check_agent = get_check_agent()
-# result = check_agent.invoke({"objectMsg": "...", "factMsg": "..."})
-# print(result.judge, result.score, result.reasoning)
-```
-
 ## 5. 提示词设计 (Prompt Design)
 
 提示词是 `check` Agent 成功的关键。它必须清晰地指示 LLM 扮演的角色、遵循的规则以及输出的格式。
@@ -152,4 +107,8 @@ def get_check_agent() -> Runnable[CheckInput, CheckOutput]:
 - **Schema 定义**: `agentlz/schemas/check.py`
 - **提示词**: `agentlz/prompts/check/system.prompt`
 
-通过遵循本规范，我们可以开发出一个强大、可靠且易于维护的 `check` Agent，为 Agentlz 平台的智能执行流程提供坚实的质量保障。
+
+## 运行
+- 运行 python -m agentlz.services.check_service 可以启动服务
+## 测试
+- 开放一个 http接口, 该接口下测试 agentlz/agents/check/check_agent_1.py能力
