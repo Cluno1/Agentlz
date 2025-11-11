@@ -9,7 +9,7 @@
 **运行命令**
 - 在项目根目录：
   - `python -m test.executor.run_excutor`
-- 环境配置 (.env)：`d:\PyCharm\AgentCode\Agentlz\.env`
+- 环境配置 (.env)：`.env.expamle`
 
 ```env
 # 统一 .env 配置（不改 settings.py 的前提下）
@@ -18,7 +18,7 @@
 # OPENAI_API_KEY="sk-xxxxxxxx"
 
 # 使用 OpenAI 兼容接口（DeepSeek 等）——推荐
-CHATOPENAI_API_KEY="sk-190a71f802514ea7bcc536df94e8292d"
+CHATOPENAI_API_KEY="。。。"
 CHATOPENAI_BASE_URL="https://api.deepseek.com/v1"
 
 # 模型与日志
