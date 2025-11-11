@@ -10,15 +10,7 @@
       "args": [
         "test/planner/test_tool/math_agent.py"
       ]
-    },
-    {
-      "name": "language_agent_top",
-      "transport": "stdio",
-      "command": "python",
-      "args": [
-        "test/planner/test_tool/language_agent.py"
-      ]
     }
   ],
-  "instructions": "1. 第一步调用 math_agent_top 工具，输入原始数字 3，执行两次平方和一次与原始数字相加的数学运算：先计算 3 的平方得到 9，再计算 9 的平方得到 81，最后将 81 与原始数字 3 相加得到最终结果 84\n2. 第二步调用 language_agent_top 工具，将上一步的数学计算结果 84 作为输入，要求生成一段包含双关语言的有趣文字，将数字 84 与中文谐音或其他双关表达方式结合，创作出幽默风趣的语句"
+  "instructions": "使用math_agent_top工具计算数字3的两次平方和一次与原始数字的相加：3²=9，9²=81，81+3=84。然后基于结果84运用\"发丝\"双关语创作有趣的话。"
 }
