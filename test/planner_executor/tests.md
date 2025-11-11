@@ -7,7 +7,7 @@
 
 **运行命令**
 - 在项目根目录：
-  - `python -m test.planner_excutor.planner_excutor`
+  - `python -m test.planner_executor.planner_executor`
 
 **环境配置 (.env)**
 - 详见 `docs/env.md`

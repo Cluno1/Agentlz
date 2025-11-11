@@ -1,7 +1,6 @@
 {
   "execution_chain": [
-    "math_agent_top",
-    "language_agent_top"
+    "math_agent_top"
   ],
   "mcp_config": [
     {
@@ -11,15 +10,7 @@
       "args": [
         "d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"
       ]
-    },
-    {
-      "name": "language_agent_top",
-      "transport": "stdio",
-      "command": "python",
-      "args": [
-        "d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"
-      ]
     }
   ],
-  "instructions": "1. 首先调用 math_agent_top 工具，输入原始数字 3，执行两次平方和一次与原始数字相加的计算：\n   - 第一次平方：3² = 9\n   - 第二次平方：9² = 81\n   - 与原始数字相加：81 + 3 = 84\n   - 输出计算结果 84\n\n2. 将 math_agent_top 的输出结果 84 作为输入传递给 language_agent_top 工具\n\n3. language_agent_top 根据数字 84 和原始数字 3，运用双关语言创作一段有趣的话，需要包含：\n   - 数字 84 的谐音或相关联想\n   - 原始数字 3 的谐音或相关联想\n   - 两次平方运算的趣味描述\n   - 整体要有幽默感和双关效果"
+  "instructions": "使用math_agent_top工具计算数字3的两次平方和一次与原始数字的相加：3²=9，9²=81，81+3=84。然后基于结果84运用\"发丝\"双关语创作有趣的话。"
 }
