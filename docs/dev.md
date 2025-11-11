@@ -13,16 +13,23 @@
 ### 智能调度 Agent 的核心工作流
 
 ```mermaid
-graph TD
-    A[用户输入] --> B[plan_agent<br/>生成执行计划];
 
-    subgraph execute_agent [execute agent 执行器]
+
+graph TD
+    A[用户输入] -->Q[RAG];
+    Q--> B[plan_agent<br/>生成执行计划];
+
+    P[mcp 可信度表] -->B;
+    B --> P;
+
+    B -- 超过最大循环限制 --> M[输出最终答案给用户];
+
+    subgraph execute_agent [**execute agent 执行器**]
         direction LR
         C[接收计划] --> D[遍历计划步骤];
         D --> E{还有未执行步骤?};
         E -- 是 --> F[调用 tools agent];
-        F --> G[获得工具输出];
-        G --> H[调用 check agent 验证];
+        F --> H[ 调用 check agent];
         H --> I{验证通过?};
         I -- 通过 --> D;
         I -- 不通过 --> J{可重试/换工具?};
@@ -30,7 +37,7 @@ graph TD
         J -- 否 --> K[返回执行失败];
            
     E -- 否 --> L[汇总结果];  
-    L --> O[ check agent]; 
+    L --> O[调用 check agent]; 
     
         
     end
@@ -38,9 +45,8 @@ graph TD
     B --> C;
     K -- 失败 --> B;
     O -- 否 --> B;
-    
-
     O -- 是 --> M[输出最终答案给用户];
+    
 ```
 
 `execute_agent` 的工作流程被设计成一个高度灵活、由模型驱动的“思考-行动”循环：
