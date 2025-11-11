@@ -1,6 +1,6 @@
 from langchain_openai import ChatOpenAI
 
-from ..config.settings import Settings
+from agentlz.config.settings import Settings
 from .logger import setup_logging
 
 

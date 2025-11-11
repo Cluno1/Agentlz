@@ -2,8 +2,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from agentlz.core.model_factory import get_model
 from agentlz.config.settings import get_settings
+from agentlz.prompts.check.check import CHECK_SYSTEM_PROMPT
 from agentlz.schemas.check import CheckInput, CheckOutput
-from agentlz.prompts import CHECK_PROMPT
+
+
 
 def get_check_agent() -> Runnable[CheckInput, CheckOutput]:
     """
@@ -19,8 +21,8 @@ def get_check_agent() -> Runnable[CheckInput, CheckOutput]:
 
     # 2. 创建提示词模板
     prompt = ChatPromptTemplate.from_messages([
-        ("system", CHECK_PROMPT),
-        ("human", "目标 (Object): \n```{objectMsg}```\n\n事实 (Fact): \n```{factMsg}```"),
+        ("system", CHECK_SYSTEM_PROMPT),
+        ("human", "目标 (Object):\n```\n{objectMsg}\n```\n\n事实 (Fact):\n```\n{factMsg}\n```"),
     ])
 
     # 3. 构建 LCEL 链
