@@ -6,7 +6,7 @@ from agentlz.agents.executor.executor_agnet import MCPChainExecutor
 from agentlz.schemas.workflow import WorkflowPlan, MCPConfigItem
 
 def main():
-    user_input = "请根据原始数字进行两次平方和一次与原始数字的相加，运用双关语言输出一段有趣的话，初始输入：3"
+    user_input = "请根据原始数字进行两次平方和一次与原始数字的相加，输出一段200字的童话，初始输入：3"
     print("开始流程编排...")
     plan_or_text = plan_workflow_chain(user_input)
     print("编排结果：", plan_or_text)

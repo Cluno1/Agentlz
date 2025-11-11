@@ -9,7 +9,7 @@
       "transport": "stdio",
       "command": "python",
       "args": [
-        "d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"
+        "test/planner/test_tool/math_agent.py"
       ]
     },
     {
@@ -17,9 +17,9 @@
       "transport": "stdio",
       "command": "python",
       "args": [
-        "d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"
+        "test/planner/test_tool/language_agent.py"
       ]
     }
   ],
-  "instructions": "1. 首先调用 math_agent_top 工具，输入原始数字 3，执行两次平方和一次与原始数字相加的计算：\n   - 第一次平方：3² = 9\n   - 第二次平方：9² = 81\n   - 与原始数字相加：81 + 3 = 84\n   - 输出计算结果 84\n\n2. 将 math_agent_top 的输出结果 84 作为输入传递给 language_agent_top 工具\n\n3. language_agent_top 根据数字 84 和原始数字 3，运用双关语言创作一段有趣的话，需要包含：\n   - 数字 84 的谐音或相关联想\n   - 原始数字 3 的谐音或相关联想\n   - 两次平方运算的趣味描述\n   - 整体要有幽默感和双关效果"
+  "instructions": "1. 第一步调用 math_agent_top 工具，输入原始数字 3，执行两次平方和一次与原始数字相加的数学运算：先计算 3 的平方得到 9，再计算 9 的平方得到 81，最后将 81 与原始数字 3 相加得到最终结果 84\n2. 第二步调用 language_agent_top 工具，将上一步的数学计算结果 84 作为输入，要求生成一段包含双关语言的有趣文字，将数字 84 与中文谐音或其他双关表达方式结合，创作出幽默风趣的语句"
 }

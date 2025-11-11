@@ -8,7 +8,7 @@
 
 **运行命令**
 - 在项目根目录：
-  - `python -m test.executor.run_excutor`
+  - `python -m test.executor.run_executor  
 - 环境配置 (.env)：`.env.expamle`
 
 ```env

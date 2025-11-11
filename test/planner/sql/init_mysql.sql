@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS mcp_agents (
   name VARCHAR(255) NOT NULL,
   transport VARCHAR(32) NOT NULL DEFAULT 'stdio',
   command VARCHAR(255) NOT NULL DEFAULT 'python',
-  args TEXT NOT NULL, -- 以 JSON 文本存储，例如 ["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]
+  args TEXT NOT NULL, -- 以 JSON 文本存储，例如 ["./test_tool/math_agent.py"]（相对 test/planner/generate_plan.py）
   description TEXT NOT NULL,
   category VARCHAR(64) NULL,
   trust_score DOUBLE NOT NULL DEFAULT 0.0,

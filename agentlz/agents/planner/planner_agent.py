@@ -3,7 +3,7 @@ from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.config.settings import get_settings
-from agentlz.agents.tools.mcp_config_tool import get_mcp_config_by_keyword
+from agentlz.agents.planner.tools.mcp_config_tool import get_mcp_config_by_keyword
 from agentlz.schemas.workflow import WorkflowPlan
 from agentlz.prompts import PLANNER_PROMPT
     

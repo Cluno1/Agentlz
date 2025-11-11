@@ -11,7 +11,7 @@ VALUES
     'math_agent_top',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]',
+    '["test/planner/test_tool/math_agent.py"]',
     '数学计算 agent（最高可信度）',
     'math',
     100
@@ -20,7 +20,7 @@ VALUES
     'math_agent_pro',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]',
+    '["test/planner/test_tool/math_agent.py"]',
     '数学计算 agent（高可信度）',
     'math',
     95
@@ -29,7 +29,7 @@ VALUES
     'math_agent_fast',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]',
+    '["test/planner/test_tool/math_agent.py"]',
     '数学计算 agent（较高可信度）',
     'math',
     88
@@ -38,7 +38,7 @@ VALUES
     'math_agent_basic',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]',
+    '["test/planner/test_tool/math_agent.py"]',
     '数学计算 agent（中等可信度）',
     'math',
     75
@@ -47,7 +47,7 @@ VALUES
     'math_agent_beta',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/math_agent.py"]',
+    '["test/planner/test_tool/math_agent.py"]',
     '数学计算 agent（实验版本，较低可信度）',
     'math',
     60
@@ -57,7 +57,7 @@ VALUES
     'language_agent_top',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"]',
+    '["test/planner/test_tool/language_agent.py"]',
     '语言处理 agent（最高可信度）',
     'language',
     100
@@ -66,7 +66,7 @@ VALUES
     'language_agent_pro',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"]',
+    '["test/planner/test_tool/language_agent.py"]',
     '语言处理 agent（高可信度）',
     'language',
     93
@@ -75,7 +75,7 @@ VALUES
     'language_agent_fast',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"]',
+    '["test/planner/test_tool/language_agent.py"]',
     '语言处理 agent（较高可信度）',
     'language',
     86
@@ -84,7 +84,7 @@ VALUES
     'language_agent_basic',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"]',
+    '["test/planner/test_tool/language_agent.py"]',
     '语言处理 agent（中等可信度）',
     'language',
     74
@@ -93,7 +93,7 @@ VALUES
     'language_agent_beta',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/test/planner/test_tool/language_agent.py"]',
+    '["test/planner/test_tool/language_agent.py"]',
     '语言处理 agent（实验版本，较低可信度）',
     'language',
     58
@@ -103,7 +103,7 @@ VALUES
     'email_agent',
     'stdio',
     'python',
-    '["d:/PyCharm/AgentCode/Agentlz/agentlz/tools/email.py"]',
+    '["agentlz/tools/email.py"]',
     '邮件工具样例',
     'tool',
     80
