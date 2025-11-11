@@ -9,7 +9,7 @@
 **运行命令**
 - 在项目根目录：
   - `python -m test.planner.generate_plan`
-- 环境配置 (.env)：详见 `docs/env.md`
+- 环境配置 (.env)：详见 `.env.expamle`
 
 ```env
 # 统一 .env 配置（不改 settings.py 的前提下）
@@ -18,7 +18,7 @@
 # OPENAI_API_KEY="sk-xxxxxxxx"
 
 # 使用 OpenAI 兼容接口（DeepSeek 等）——推荐
-CHATOPENAI_API_KEY="sk-190a71f802514ea7bcc536df94e8292d"
+CHATOPENAI_API_KEY="sk-。。。"
 CHATOPENAI_BASE_URL="https://api.deepseek.com/v1"
 
 # 模型与日志
@@ -26,10 +26,10 @@ MODEL_NAME="deepseek-chat"
 LOG_LEVEL="INFO"
 
 # MySQL 连接配置（用于 MCP 仓储查询）
-DB_HOST="117.72.162.89"
+DB_HOST="。。。"
 DB_PORT="13306"
 DB_USER="root"
-DB_PASSWORD="agentdb123456"
+DB_PASSWORD="。。。"
 # 注意：仓库 SQL 使用的是 agentlz 数据库
 DB_NAME="agentlz"
 ```

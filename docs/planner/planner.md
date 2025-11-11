@@ -53,4 +53,4 @@
 
 **相关文档**
 - 测试说明：`docs/test/tests.md`
-- 环境与数据库：`docs/test/env.md`
+- 环境与数据库：`.env.expamle`
