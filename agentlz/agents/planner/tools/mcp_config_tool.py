@@ -1,7 +1,8 @@
 from langchain.tools import tool
-from typing import List, Dict
 import json
-
+from agentlz.core.logger import setup_logging
+from agentlz.config.settings import get_settings
+from agentlz.repositories.mcp_repository import search_mcp_by_keyword, to_tool_config
 
 @tool
 def get_mcp_config_by_keyword(keyword: str) -> str:
@@ -13,9 +14,19 @@ def get_mcp_config_by_keyword(keyword: str) -> str:
          ORDER BY trust_score DESC
          LIMIT 10;
     """
-    from agentlz.repositories.mcp_repository import search_mcp_by_keyword, to_tool_config
-    rows = search_mcp_by_keyword(keyword, limit=3)
-    print(f"🔍 按关键词查询 MCP 结果: {rows}")
-    result = [to_tool_config(r) for r in rows]
-    # 工具输出必须是字符串，避免下游 OpenAI Chat Completions 对 messages.content 的类型错误
-    return json.dumps(result, ensure_ascii=False)
+    settings = get_settings()
+    logger = setup_logging(settings.log_level)
+  
+    try:
+        kw = (keyword or "").strip()
+        if not kw:
+            logger.warning("关键词为空，返回空列表")
+            return json.dumps([], ensure_ascii=False)
+        rows = search_mcp_by_keyword(kw, limit=3)
+        logger.info("🔍 按关键词查询 MCP 结果: %s", rows)
+        result = [to_tool_config(r) for r in rows]
+        # 工具输出必须是字符串，避免下游 OpenAI Chat Completions 对 messages.content 的类型错误
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("查询 MCP 失败：%r", e)
+        return json.dumps([], ensure_ascii=False)

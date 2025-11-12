@@ -6,6 +6,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
+from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import WorkflowPlan, MCPConfigItem
 from agentlz.prompts import EXECUTOR_PROMPT
@@ -26,48 +27,62 @@ class MCPChainExecutor:
             }
             for item in self.plan.mcp_config
         }
-        self.client = MultiServerMCPClient(mcp_dict)
+        try:
+            self.client = MultiServerMCPClient(mcp_dict)
+        except Exception as e:
+            settings = get_settings()
+            logger = setup_logging(settings.log_level)
+            logger.exception("创建 MCP 客户端失败：%r", e)
+            self.client = None
 
     async def execute_chain(self, input_data):
         """
         使用 MCP 工具集合创建 LangChain 代理并执行用户任务。
         """
         self.assemble_mcp()
+        settings = get_settings()
+        logger = setup_logging(settings.log_level)
         tools = []
-        try:
-            tools = await self.client.get_tools()
-        except Exception as e:
-            import sys
-            print("❌ 加载 MCP 工具失败:", repr(e), file=sys.stderr)
-            # 继续以无工具模式执行
-            tools = []
+        if self.client is not None:
+            try:
+                tools = await self.client.get_tools()
+            except Exception as e:
+                logger.exception("加载 MCP 工具失败：%r", e)
+                tools = []
+        else:
+            logger.warning("MCP 客户端不可用，将在无工具模式下执行。")
         # 将计划中的链路作为偏好提示传递给代理
         preferred_chain = ", ".join(self.plan.execution_chain) if self.plan.execution_chain else ""
         system_prompt = EXECUTOR_PROMPT + (f"优先按以下顺序使用工具/服务：{preferred_chain}。" if preferred_chain else "")
-        settings = get_settings()
         llm = get_model(settings)
         if llm is None:
-            raise ValueError(
-                "Model is not configured. Set OPENAI_API_KEY or CHATOPENAI_API_KEY/CHATOPENAI_BASE_URL in .env"
-            )
+            logger.error("模型未配置：请在 .env 设置 OPENAI_API_KEY 或 CHATOPENAI_API_KEY/CHATOPENAI_BASE_URL")
+            return "执行器错误：模型未配置，无法执行链路。"
         # 通过 ChatPromptTemplate 组织提示词与输入；如果 planner 给出 instructions，则一并注入
         template_msgs = [("system", system_prompt)]
         if getattr(self.plan, "instructions", None):
             template_msgs.append(("system", "{instructions}"))
         template_msgs.append(("human", "{input}"))
+        # 提示词构建
         prompt = ChatPromptTemplate.from_messages(template_msgs)
         # 创建 LangChain 代理
-        agent = create_agent(model=llm, tools=tools, system_prompt=system_prompt)
+        try:
+            agent = create_agent(model=llm, tools=tools, system_prompt=system_prompt)
+        except Exception as e:
+            logger.exception("创建 Executor 代理失败：%r", e)
+            return "执行器错误：代理创建失败。"
         user_content = input_data if isinstance(input_data, str) else str(input_data)
         try:
             formatted_msgs = prompt.format_messages(input=user_content, instructions=getattr(self.plan, "instructions", ""))
             # 系统提示词由 system_prompt 注入，这里仅传递用户消息
             response = await agent.ainvoke({"messages": [formatted_msgs[-1]]})
         except Exception as e:
-            import sys
-            print("❌ 代理执行失败:", repr(e), file=sys.stderr)
-            raise
-        return response["messages"][-1].content if isinstance(response, dict) else response
+            logger.exception("代理执行失败：%r", e)
+            return "执行器错误：代理执行失败。"
+        try:
+            return response["messages"][-1].content if isinstance(response, dict) else response
+        except Exception:
+            return str(response)
 
 
 
