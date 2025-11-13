@@ -1,0 +1,1 @@
+"""planner package marker to ensure module execution via -m works reliably."""

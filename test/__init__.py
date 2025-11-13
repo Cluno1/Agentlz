@@ -1,0 +1,1 @@
+"""Project test package (explicit to avoid stdlib 'test' collision)."""

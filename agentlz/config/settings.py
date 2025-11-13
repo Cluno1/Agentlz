@@ -24,9 +24,18 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     # search
     bing_api_key: str | None = Field(default=None, env="BING_API_KEY")
+
+    # database (只做添加，允许 .env 中的 DB_* 键被识别)
+    db_host: str | None = Field(default=None, env="DB_HOST")
+    db_port: int | None = Field(default=None, env="DB_PORT")
+    db_user: str | None = Field(default=None, env="DB_USER")
+    db_password: str | None = Field(default=None, env="DB_PASSWORD")
+    db_name: str | None = Field(default=None, env="DB_NAME")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
+    # 配置HuggingFace 中文句向量嵌入模型
+    hf_embedding_model: str = Field(default="BAAI/bge-small-zh-v1.5", env="HF_EMBEDDING_MODEL")
 
 def get_settings() -> Settings:
     return Settings()
+
