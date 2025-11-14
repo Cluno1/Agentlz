@@ -1,7 +1,6 @@
 {
   "execution_chain": [
-    "math_agent_top",
-    "language_agent_top"
+    "math_agent_top"
   ],
   "mcp_config": [
     {
