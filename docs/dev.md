@@ -2,7 +2,7 @@
 
 ## 开发规范（企业后端 / LangChain）
 
-本规范面向企业级后端服务，目标是提供一个通过 HTTPS 暴露接口的 Agent 平台。企业可在平台上开发/托管 Agent，上传企业文档并进行检索增强（RAG），基础存储采用 SQLite（结构化/元数据）与 FAISS（向量存储）。本规范约束架构分层、编码方式、安全与合规、API 设计、测试与运维等方面，确保可维护、可扩展与可审计。
+本规范面向企业级后端服务，目标是提供一个通过 HTTPS 暴露接口的 Agent 平台。企业可在平台上开发/托管 Agent，上传企业文档并进行检索增强（RAG），基础存储采用 MySQL（结构化/元数据）与 FAISS（向量存储）。本规范约束架构分层、编码方式、安全与合规、API 设计、测试与运维等方面，确保可维护、可扩展与可审计。
 
 ## 当前目标
 
@@ -81,7 +81,7 @@ graph TD
 
 - 仅后端服务；前端不在本仓库内。
 - 对外暴露 HTTPS 接口（REST/WS）；内部使用 LangChain/LangGraph 编排。
-- 文档上传、切分、嵌入与检索；使用 SQLite + FAISS。
+- 文档上传、切分、嵌入与检索；使用 MySQL + FAISS。
 - 面向企业多租户场景，强化鉴权、RBAC、审计与合规。
 
 ---
@@ -147,7 +147,7 @@ graph TD
 
 - 传输安全：仅开放 HTTPS；推荐在反向代理（Nginx/Envoy）终止 TLS，或 `uvicorn --ssl-certfile/--ssl-keyfile`。
 - 身份与授权：默认 `JWT` 鉴权；支持企业级 RBAC（角色/权限/租户）；所有接口需校验 `tenant_id`。
-- 多租户：通过 `X-Tenant-ID` 头或 Token 声明租户；严格隔离数据（SQLite 库/表与 FAISS 索引/目录隔离）。
+- 多租户：通过 `X-Tenant-ID` 头或 Token 声明租户；严格隔离数据（MySQL 库/表与 FAISS 索引/目录隔离）。
 - 输入校验：所有入参通过 `pydantic` 模型校验；文件上传校验类型、大小与病毒扫描（可插拔）。
 - 审计：对敏感操作（上传、删除、查询）记录审计日志；保留 `who/when/what`。
 - 速率限制：为公共与企业接口配置 QPS/QPM 限流；对滥用行为进行封禁与告警。
@@ -162,7 +162,7 @@ graph TD
 - 建议关键变量：
   - `OPENAI_API_KEY` / 其他模型提供商密钥
   - `MODEL_NAME`、`MODEL_PROVIDER`、`LOG_LEVEL`
-  - `SQLITE_DB_PATH`（如 `./storage/meta.db`）
+  - `MySQL_DB_PATH`（如 `./storage/meta.db`）
 - `FAISS_INDEX_DIR`（如 `./storage/faiss`）
   - `AUTH_JWT_SECRET`、`AUTH_JWT_ALG`、`AUTH_JWT_ISSUER`
   - `TENANT_ID_HEADER`（默认 `X-Tenant-ID`）
@@ -170,9 +170,9 @@ graph TD
 
 ---
 
-## 数据与存储（SQLite / FAISS）
+## 数据与存储（MySQL / FAISS）
 
-- SQLite：存储文档元数据、租户信息、任务状态与审计日志；通过迁移工具维护表结构（推荐 Alembic）。
+- MySQL：存储文档元数据、租户信息、任务状态与审计日志；通过迁移工具维护表结构（推荐 Alembic）。
 - FAISS：向量存储用于检索增强；按租户/Agent 以索引名或目录进行隔离；持久化目录由 `FAISS_INDEX_DIR` 管理。
 - 模型：统一在 `schemas/*` 中定义数据模型；避免跨层直接访问 DB，使用服务层封装。
 - 生命周期：文档从上传 → 入库 → 切分 → 嵌入 → 入向量库 → 可检索；支持版本化与撤销（软删除）。
@@ -218,7 +218,7 @@ graph TD
 ## 测试与质量保障
 
 - 单元测试：聚焦纯逻辑（工具、服务、配置）；为外部集成提供 stub/mock，避免外网依赖。
-- 集成测试：覆盖 Agent 编排与 RAG 流程；使用本地临时 FAISS 与 SQLite。
+- 集成测试：覆盖 Agent 编排与 RAG 流程；使用本地临时 FAISS 与 MySQL。
 - 代码质量：在 CI 中执行 `ruff`、`black`、`pytest`；对关键模块设定最低覆盖率门槛。
 - 快照与合同测试：确保响应结构与错误码稳定；API 变更需伴随测试与文档更新。
 
@@ -229,7 +229,7 @@ graph TD
 - 本地：CLI `python -m agentlz.app.cli query "..."`；HTTP 通过 `http_langserve.py` 启动。
 - 生产：推荐 `uvicorn` + 反向代理（TLS、限流、审计）；环境变量注入配置。
 - 包装与发布：使用 `pyproject.toml` 定义包信息与入口点，便于内部发布与版本管理。
-- 容器化：将 `FAISS_INDEX_DIR` 与 SQLite 路径挂载为持久卷；按索引名/目录隔离。
+- 容器化：将 `FAISS_INDEX_DIR` 与 MySQL 路径挂载为持久卷；按索引名/目录隔离。
 
 ---
 
@@ -262,7 +262,7 @@ MODEL_NAME=gpt-4o-mini
 OPENAI_API_KEY=your-key
 
 # 存储
-SQLITE_DB_PATH=./storage/meta.db
+MySQL_DB_PATH=./storage/meta.db
 FAISS_INDEX_DIR=./storage/faiss
 
 # 安全

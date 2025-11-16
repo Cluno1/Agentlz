@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     db_user: str | None = Field(default=None, env="DB_USER")
     db_password: str | None = Field(default=None, env="DB_PASSWORD")
     db_name: str | None = Field(default=None, env="DB_NAME")
+    # 用户管理表名 & 多租户请求头
+    user_table_name: str = Field(default="users", env="USER_TABLE_NAME")
+    tenant_id_header: str = Field(default="X-Tenant-ID", env="TENANT_ID_HEADER")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     # 配置HuggingFace 中文句向量嵌入模型
