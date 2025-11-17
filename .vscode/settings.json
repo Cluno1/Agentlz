@@ -1,0 +1,19 @@
+{
+    "sqltools.connections": [
+        {
+            "mysqlOptions": {
+                "authProtocol": "default",
+                "enableSsl": "Disabled"
+            },
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "117.72.162.89",
+            "port": 13306,
+            "driver": "MySQL",
+            "username": "root",
+            "name": "agentlz",
+            "database": "agentlz",
+            "password": "agentdb123456"
+        }
+    ]
+}
