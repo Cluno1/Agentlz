@@ -9,6 +9,7 @@
 
 通用约定：
 - 多租户：所有接口必须在请求头携带租户标识 `X-Tenant-ID`（或 `.env` 中的 `TENANT_ID_HEADER`）。
+- 认证：所有接口必须在请求头携带 `Authorization: Bearer <token>`（登录与注册接口除外）。
 - 响应模型：统一返回 `UserItem` 或 `ListResponse`（`data + total`）。
 - 字段：与数据库列对齐（`id`、`username`、`email`、`password_hash`、`full_name`、`avatar`、`role`、`disabled`、`created_at`、`created_by_id`、`tenant_id`）。
 - 密码：当前按照你的数据示例，`password` 明文写入 `password_hash` 列；上线前建议替换为哈希（bcrypt）。
@@ -30,6 +31,7 @@
 ```
 curl -s \
   -H "X-Tenant-ID: default" \
+  -H "Authorization: Bearer <token>" \
   "http://localhost:8000/v1/users?_page=1&_perPage=10&_sort=id&_order=ASC&q=user"
 ```
 
@@ -68,7 +70,10 @@ curl -s \
 
 示例请求：
 ```
-curl -s -H "X-Tenant-ID: default" "http://localhost:8000/v1/users/1"
+curl -s \
+  -H "X-Tenant-ID: default" \
+  -H "Authorization: Bearer <token>" \
+  "http://localhost:8000/v1/users/1"
 ```
 
 示例响应（200）：
@@ -109,6 +114,7 @@ curl -s -H "X-Tenant-ID: default" "http://localhost:8000/v1/users/1"
 ```
 curl -s -X POST \
   -H "X-Tenant-ID: default" \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
         "username": "user_051",
@@ -145,6 +151,7 @@ curl -s -X POST \
 ```
 curl -s -X PUT \
   -H "X-Tenant-ID: default" \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
         "full_name": "张三(更新)",
@@ -183,7 +190,7 @@ curl -s -X PUT \
 
 示例请求：
 ```
-curl -s -X DELETE -H "X-Tenant-ID: default" http://localhost:8000/v1/users/4 -i
+curl -s -X DELETE -H "X-Tenant-ID: default" -H "Authorization: Bearer <token>" http://localhost:8000/v1/users/4 -i
 ```
 
 成功响应（204）：

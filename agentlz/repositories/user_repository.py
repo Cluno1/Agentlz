@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
-
 from sqlalchemy import text
 
 from agentlz.repositories.db import get_engine
@@ -74,6 +72,32 @@ def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": user_id, "tenant_id": tenant_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def get_user_by_username(*, username: str, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, username, password_hash, disabled
+        FROM `{table_name}` WHERE username = :u AND tenant_id = :t LIMIT 1
+        """
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"u": username, "t": tenant_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, username, email, tenant_id
+        FROM `{table_name}` WHERE email = :e LIMIT 1
+        """
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"e": email}).mappings().first()
     return dict(row) if row else None
 
 

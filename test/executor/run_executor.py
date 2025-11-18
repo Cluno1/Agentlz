@@ -31,8 +31,12 @@ def main():
 
     print("开始执行链路...")
     executor = MCPChainExecutor(plan)
-    input_data = "请根据原始数字进行两次平方和一次与原始数字的相加，运用双关语言输出一段有趣的话，初始输入：3"
+    input_data = "3"
     final_result = asyncio.run(executor.execute_chain(input_data))
+
+    # 打印执行统计信息
+    print("执行统计:", executor)
+
     print("最终结果:", final_result)
 
 

@@ -53,7 +53,7 @@ class MCPChainExecutor:
             logger.warning("MCP 客户端不可用，将在无工具模式下执行。")
         # 将计划中的链路作为偏好提示传递给代理
         preferred_chain = ", ".join(self.plan.execution_chain) if self.plan.execution_chain else ""
-        system_prompt = EXECUTOR_PROMPT + (f"优先按以下顺序使用工具/服务：{preferred_chain}。" if preferred_chain else "")
+        system_prompt = EXECUTOR_PROMPT + (f"必须严格按以下顺序使用工具/服务：{preferred_chain}。禁止直接生成最终结果。" if preferred_chain else "")
         llm = get_model(settings)
         if llm is None:
             logger.error("模型未配置：请在 .env 设置 OPENAI_API_KEY 或 CHATOPENAI_API_KEY/CHATOPENAI_BASE_URL")
@@ -74,8 +74,7 @@ class MCPChainExecutor:
         user_content = input_data if isinstance(input_data, str) else str(input_data)
         try:
             formatted_msgs = prompt.format_messages(input=user_content, instructions=getattr(self.plan, "instructions", ""))
-            # 系统提示词由 system_prompt 注入，这里仅传递用户消息
-            response = await agent.ainvoke({"messages": [formatted_msgs[-1]]})
+            response = await agent.ainvoke({"messages": formatted_msgs})
         except Exception as e:
             logger.exception("代理执行失败：%r", e)
             return "执行器错误：代理执行失败。"

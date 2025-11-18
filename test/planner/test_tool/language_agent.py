@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from langchain_core.messages import HumanMessage
 from mcp.server.fastmcp import FastMCP
 from langchain.agents import create_agent
@@ -16,6 +17,43 @@ from agentlz.core.model_factory import get_model
 # 创建MCP服务器
 mcp = FastMCP("LanguageAgent")
 
+COUNTER_JSON_PATH = r"d:\PyCharm\AgentCode\Agentlz\test\planner\counter.json"
+
+def _increment_counter(key: str) -> int:
+    try:
+        with open(COUNTER_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    value = int(data.get(key, 0)) + 1
+    data[key] = value
+    try:
+        with open(COUNTER_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+    return value
+
+def _record_io(prefix: str, input_val: str, output_val: str) -> None:
+    try:
+        with open(COUNTER_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    data[f"{prefix}_last_input"] = input_val
+    data[f"{prefix}_last_output"] = output_val
+    logs_key = f"{prefix}_logs"
+    logs = data.get(logs_key)
+    if not isinstance(logs, list):
+        logs = []
+    logs.append({"input": input_val, "output": output_val})
+    data[logs_key] = logs
+    try:
+        with open(COUNTER_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 language_stats = {
     "total_requests": 0,
     "last_input": "",
@@ -25,7 +63,7 @@ language_stats = {
 @mcp.tool()
 async def language(num: str) -> str:
     """将数字结果转化为有趣双关的描述 - 添加追踪"""
-    language_stats["total_requests"] += 1
+    language_stats["total_requests"] = _increment_counter("language_calls")
     language_stats["last_input"] = num
     print(f" [LanguageAgent] 开始语言处理，输入: {num}")
     try:
@@ -51,7 +89,9 @@ async def language(num: str) -> str:
         })
         output = result["messages"][-1].content
         language_stats["last_output"] = output[:200] + "..." if len(output) > 200 else output
+        print(f"[LanguageAgent] 输出: {output}")
         print(f"[LanguageAgent] 语言处理完成，输出长度: {len(output)}")
+        _record_io("language", num, output)
         return output
     except Exception as e:
         print(f" [LanguageAgent] 语言处理失败: {e}")

@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # 用户管理表名 & 多租户请求头
     user_table_name: str = Field(default="users", env="USER_TABLE_NAME")
     tenant_id_header: str = Field(default="X-Tenant-ID", env="TENANT_ID_HEADER")
+    # JWT token 配置
+    auth_jwt_secret: str = Field(default="dev-secret", env="AUTH_JWT_SECRET")
+    auth_jwt_alg: str = Field(default="HS256", env="AUTH_JWT_ALG")
+    auth_jwt_issuer: str = Field(default="agentlz", env="AUTH_JWT_ISSUER")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     # 配置HuggingFace 中文句向量嵌入模型

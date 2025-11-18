@@ -10,7 +10,8 @@ from typing import Optional, Dict
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from agentlz.config.settings import get_settings
-from agentlz.schemas.user import ListResponse, UserCreate, UserItem, UserUpdate
+from agentlz.schemas.user import UserCreate, UserItem, UserUpdate
+from agentlz.schemas.responses import Result
 from agentlz.services import user_service
 
 
@@ -26,7 +27,7 @@ def _require_tenant_id(request: Request) -> str:
     return tenant_id
 
 
-@router.get("/users", response_model=ListResponse)
+@router.get("/users", response_model=Result)
 def list_users(
     request: Request,
     _page: int = Query(1, ge=1),
@@ -39,40 +40,39 @@ def list_users(
     rows, total = user_service.list_users_service(
         page=_page, per_page=_perPage, sort=_sort, order=_order, q=q, tenant_id=tenant_id
     )
-    # Pydantic 会进行模型转换
-    data = [UserItem(**r) for r in rows]
-    return {"data": data, "total": total}
+    data_items = [UserItem(**r) for r in rows]
+    return Result.ok({"data": data_items, "total": total})
 
 
-@router.get("/users/{user_id}", response_model=UserItem)
+@router.get("/users/{user_id}", response_model=Result)
 def get_user(user_id: int, request: Request):
     tenant_id = _require_tenant_id(request)
     row = user_service.get_user_service(user_id=user_id, tenant_id=tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserItem(**row)
+    return Result.ok(row)
 
 
-@router.post("/users", response_model=UserItem, status_code=status.HTTP_201_CREATED)
+@router.post("/users", response_model=Result, status_code=status.HTTP_201_CREATED)
 def create_user(payload: UserCreate, request: Request):
     tenant_id = _require_tenant_id(request)
     row = user_service.create_user_service(payload=payload, tenant_id=tenant_id)
-    return UserItem(**row)
+    return Result.ok(row)
 
 
-@router.put("/users/{user_id}", response_model=UserItem)
+@router.put("/users/{user_id}", response_model=Result)
 def update_user(user_id: int, payload: UserUpdate, request: Request):
     tenant_id = _require_tenant_id(request)
     row = user_service.update_user_service(user_id=user_id, payload=payload, tenant_id=tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserItem(**row)
+    return Result.ok(row)
 
 
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/users/{user_id}", response_model=Result)
 def delete_user(user_id: int, request: Request):
     tenant_id = _require_tenant_id(request)
     ok = user_service.delete_user_service(user_id=user_id, tenant_id=tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found")
-    return {}
+    return Result.ok({})

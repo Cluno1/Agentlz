@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 from langchain_core.messages import HumanMessage
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +19,44 @@ from test.planner.test_tool import math_tool
 mcp = FastMCP("MathAgent")
 call_stack = []
 tool_usage_count = {}
+COUNTER_JSON_PATH = r"d:\PyCharm\AgentCode\Agentlz\test\planner\counter.json"
+
+def _increment_counter(key: str) -> int:
+    try:
+        with open(COUNTER_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    value = int(data.get(key, 0)) + 1
+    data[key] = value
+    try:
+        with open(COUNTER_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+    return value
+
+
+def _record_io(prefix: str, input_val: str, output_val: str) -> None:
+    try:
+        with open(COUNTER_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    data[f"{prefix}_last_input"] = input_val
+    data[f"{prefix}_last_output"] = output_val
+    logs_key = f"{prefix}_logs"
+    logs = data.get(logs_key)
+    if not isinstance(logs, list):
+        logs = []
+    logs.append({"input": input_val, "output": output_val})
+    data[logs_key] = logs
+    try:
+        with open(COUNTER_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 _math_tool_path = os.path.abspath(math_tool.__file__)
 math_client = MultiServerMCPClient({
     "math_mcp": {
@@ -35,6 +74,7 @@ async def calculate(expression: str) -> str:
     call_stack.append({"id": call_id, "tool": "calculate", "input": expression, "timestamp": time.time()})
     try:
         tool_usage_count["calculate"] = tool_usage_count.get("calculate", 0) + 1
+        _increment_counter("math_calls")
         tools = await math_client.get_tools()
         print(f"🛠️  获取到 {len(tools)} 个数学工具")
         settings = get_settings()
@@ -51,6 +91,7 @@ async def calculate(expression: str) -> str:
         })
         final_result = result["messages"][-1].content
         print(f"✅ [MathAgent] 计算完成: {final_result[:100]}...")
+        _record_io("math", expression, final_result)
         return final_result
     except Exception as e:
         print(f"❌ [MathAgent] 执行失败: {e}")
