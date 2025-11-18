@@ -29,8 +29,12 @@ def login_service(*, tenant_id: str, username: str, password: str) -> str:
 def register_service(*, tenant_id: str, username: str, email: Optional[str], password: str) -> Dict[str, Any]:
     s = get_settings()
     table = getattr(s, "user_table_name", "users")
-    exists = repo.get_user_by_username(username=username, tenant_id=tenant_id, table_name=table)
-    if exists:
+    exists_user = repo.get_user_by_username(username=username, tenant_id=tenant_id, table_name=table)
+    if exists_user:
         raise ValueError("user_exists")
+    if email:
+        exists_email = repo.get_user_by_email(email=email, table_name=table)
+        if exists_email:
+            raise ValueError("email_exists")
     payload = UserCreate(username=username, email=email, password=password)
     return user_service.create_user_service(payload=payload, tenant_id=tenant_id)

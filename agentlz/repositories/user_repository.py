@@ -88,6 +88,19 @@ def get_user_by_username(*, username: str, tenant_id: str, table_name: str) -> O
     return dict(row) if row else None
 
 
+def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, username, email, tenant_id
+        FROM `{table_name}` WHERE email = :e LIMIT 1
+        """
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"e": email}).mappings().first()
+    return dict(row) if row else None
+
+
 def create_user(
     *,
     payload: Dict[str, Any],
