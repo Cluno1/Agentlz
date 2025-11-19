@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     auth_jwt_secret: str = Field(default="dev-secret", env="AUTH_JWT_SECRET")
     auth_jwt_alg: str = Field(default="HS256", env="AUTH_JWT_ALG")
     auth_jwt_issuer: str = Field(default="agentlz", env="AUTH_JWT_ISSUER")
+    # CORS
+    cors_allow_origins: list[str] = Field(default=["*"], env="CORS_ALLOW_ORIGINS")
+    cors_allow_credentials: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
+    cors_allow_methods: list[str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
+    cors_allow_headers: list[str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     # 配置HuggingFace 中文句向量嵌入模型
