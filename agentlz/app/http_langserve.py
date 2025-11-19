@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Dict
 from fastapi import FastAPI, Depends, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from agentlz.config.settings import get_settings
 from agentlz.app.routers.users import router as users_router
 from agentlz.app.routers.auth import router as auth_router
 from agentlz.app.deps.auth_deps import require_auth
@@ -9,6 +11,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 app = FastAPI()
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allow_origins,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
+)
 app.include_router(auth_router)
 app.include_router(users_router, dependencies=[Depends(require_auth)])
 
