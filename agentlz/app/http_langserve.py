@@ -24,15 +24,25 @@ app.include_router(users_router, dependencies=[Depends(require_auth)])
 
 @app.exception_handler(HTTPException)
 async def _http_exc_handler(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content=Result.error(message=str(getattr(exc, "detail", "")) or str(exc), code=exc.status_code).model_dump())
+    msg = str(getattr(exc, "detail", "")) or str(exc)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=Result.error(message=msg, code=exc.status_code, data={}).model_dump(),
+    )
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exc_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content=Result.error(message="Validation error", code=422, data=exc.errors()).model_dump())
+    return JSONResponse(
+        status_code=422,
+        content=Result.error(message="参数校验错误", code=422, data={"errors": exc.errors(), "path": request.url.path}).model_dump(),
+    )
 
 @app.exception_handler(Exception)
 async def _general_exc_handler(request: Request, exc: Exception):
-    return JSONResponse(status_code=500, content=Result.error(message="Server error", code=500, data={"error": str(exc)}).model_dump())
+    return JSONResponse(
+        status_code=500,
+        content=Result.error(message="服务器内部错误", code=500, data={"error": str(exc), "path": request.url.path}).model_dump(),
+    )
 
 
 

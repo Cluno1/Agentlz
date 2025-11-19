@@ -9,7 +9,7 @@
 
  激活环境（Linux/Mac）：source .venv/bin/activate
  激活环境（Windows）：.\.venv\Scripts\activate
- 更新pip ：pip install --upgrade pip    
+ 更新pip ：python -m pip install --upgrade pip   
  安装依赖：pip install -r requirements.txt
 
  设置.env 环境变量
