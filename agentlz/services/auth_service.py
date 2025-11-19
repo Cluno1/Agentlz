@@ -10,10 +10,14 @@ def login_service(*, username: str, password: str) -> tuple[str, UserItem]:
     s = get_settings()
     table = getattr(s, "user_table_name", "users")
     row = repo.get_user_by_username(username=username, table_name=table)
-    if not row or int(row.get("disabled", 0)) == 1:
-        raise ValueError("invalid_credentials")
-    if str(row.get("password_hash") or "") != str(password):
-        raise ValueError("invalid_credentials")
+    if not row:
+        raise ValueError("user_not_found")
+    if int(row.get("disabled", 0)) == 1:
+        raise ValueError("user_disabled")
+    stored = str(row.get("password_hash") or "").strip()
+    provided = str(password).strip()
+    if stored != provided:
+        raise ValueError("invalid_password")
     tenant_id = str(row.get("tenant_id"))
     secret = getattr(s, "auth_jwt_secret", "dev-secret-change-me")
     alg = getattr(s, "auth_jwt_alg", "HS256")
@@ -26,7 +30,6 @@ def login_service(*, username: str, password: str) -> tuple[str, UserItem]:
         algorithm=alg,
     )
     normalized = dict(row)
-    ##在构造 UserItem 前先规范化 created_at
     ca = normalized.get("created_at")
     try:
         from datetime import datetime as _dt

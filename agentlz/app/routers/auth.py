@@ -12,11 +12,17 @@ router = APIRouter(prefix="/v1", tags=["auth"])
 @router.post("/login", response_model=Result)
 def login(payload: LoginPayload):
     try:
-        print(payload.username, payload.password)
         token, user = login_service(username=payload.username, password=payload.password)
         return Result.ok({"token": token, "user": user})
-    except ValueError:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    except ValueError as e:
+        msg = str(e)
+        if msg == "user_not_found":
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if msg == "user_disabled":
+            raise HTTPException(status_code=403, detail="用户已禁用")
+        if msg == "invalid_password":
+            raise HTTPException(status_code=401, detail="密码错误")
+        raise HTTPException(status_code=400, detail="登录数据错误")
 
 
 
