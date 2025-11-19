@@ -75,17 +75,6 @@ def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional
     return dict(row) if row else None
 
 
-def get_user_by_username(*, username: str, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
-    sql = text(
-        f"""
-        SELECT id, username, password_hash, disabled
-        FROM `{table_name}` WHERE username = :u AND tenant_id = :t LIMIT 1
-        """
-    )
-    engine = get_engine()
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"u": username, "t": tenant_id}).mappings().first()
-    return dict(row) if row else None
 
 
 def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]]:
@@ -98,6 +87,20 @@ def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"e": email}).mappings().first()
+    return dict(row) if row else None
+
+
+
+def get_user_by_username(*, username: str, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, username, email, full_name, avatar, role, disabled, created_at, created_by_id, tenant_id, password_hash
+        FROM `{table_name}` WHERE username = :u LIMIT 1
+        """
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"u": username}).mappings().first()
     return dict(row) if row else None
 
 

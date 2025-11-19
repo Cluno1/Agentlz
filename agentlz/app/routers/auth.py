@@ -10,16 +10,11 @@ router = APIRouter(prefix="/v1", tags=["auth"])
 
 
 @router.post("/login", response_model=Result)
-def login(payload: LoginPayload, request: Request):
-    # 登录：校验用户名与密码，签发 JWT（含 sub/username/tenant_id/iss/iat/exp）
-    s = get_settings()
-    tenant_header = getattr(s, "tenant_id_header", "X-Tenant-ID")
-    tenant_id = request.headers.get(tenant_header)
-    if not tenant_id:
-        raise HTTPException(status_code=400, detail=f"Missing tenant header: {tenant_header}")
+def login(payload: LoginPayload):
     try:
-        token = login_service(tenant_id=tenant_id, username=payload.username, password=payload.password)
-        return Result.ok({"token": token})
+        print(payload.username, payload.password)
+        token, user = login_service(username=payload.username, password=payload.password)
+        return Result.ok({"token": token, "user": user})
     except ValueError:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
