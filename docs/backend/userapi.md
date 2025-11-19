@@ -10,7 +10,7 @@
 通用约定：
 - 多租户：所有接口必须在请求头携带租户标识 `X-Tenant-ID`（或 `.env` 中的 `TENANT_ID_HEADER`）。
 - 认证：所有接口必须在请求头携带 `Authorization: Bearer <token>`（登录与注册接口除外）。
-- 响应模型：统一返回 `UserItem` 或 `ListResponse`（`data + total`）。
+- 统一返回：所有路由 `response_model=Result`，真实数据置于 `data` 字段；列表数据形如 `{ "data": [UserItem...], "total": number }`。
 - 字段：与数据库列对齐（`id`、`username`、`email`、`password_hash`、`full_name`、`avatar`、`role`、`disabled`、`created_at`、`created_by_id`、`tenant_id`）。
 - 密码：当前按照你的数据示例，`password` 明文写入 `password_hash` 列；上线前建议替换为哈希（bcrypt）。
 
@@ -38,28 +38,36 @@ curl -s \
 示例响应（200）：
 ```
 {
-  "data": [
-    {
-      "id": 2,
-      "username": "user_001",
-      "email": "user001@",
-      "full_name": "小娟",
-      "avatar": "https://i.p",
-      "role": "user",
-      "disabled": false,
-      "created_at": "2025-02-24 00:00:00",
-      "created_by_id": null,
-      "tenant_id": "default"
-    }
-  ],
-  "total": 50
+  "success": true,
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "data": [
+      {
+        "id": 2,
+        "username": "user_001",
+        "email": "user001@",
+        "full_name": "小娟",
+        "avatar": "https://i.p",
+        "role": "user",
+        "disabled": false,
+        "created_at": "2025-02-24 00:00:00",
+        "created_by_id": null,
+        "tenant_id": "default"
+      }
+    ],
+    "total": 50
+  }
 }
 ```
 
 错误示例（缺少租户头 400）：
 ```
 {
-  "detail": "Missing tenant header: X-Tenant-ID"
+  "success": false,
+  "code": 400,
+  "message": "Missing tenant header: X-Tenant-ID",
+  "data": {}
 }
 ```
 
@@ -79,23 +87,31 @@ curl -s \
 示例响应（200）：
 ```
 {
-  "id": 1,
-  "username": "admin",
-  "email": "admin@e",
-  "full_name": "系统管理员",
-  "avatar": "https://i.p",
-  "role": "admin",
-  "disabled": false,
-  "created_at": "2025-11-14 00:00:00",
-  "created_by_id": null,
-  "tenant_id": "default"
+  "success": true,
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": 1,
+    "username": "admin",
+    "email": "admin@e",
+    "full_name": "系统管理员",
+    "avatar": "https://i.p",
+    "role": "admin",
+    "disabled": false,
+    "created_at": "2025-11-14 00:00:00",
+    "created_by_id": null,
+    "tenant_id": "default"
+  }
 }
 ```
 
 未找到（404）：
 ```
 {
-  "detail": "User not found"
+  "success": false,
+  "code": 404,
+  "message": "用户不存在",
+  "data": {}
 }
 ```
 
@@ -129,16 +145,21 @@ curl -s -X POST \
 示例响应（201）：
 ```
 {
-  "id": 51,
-  "username": "user_051",
-  "email": "user051@",
-  "full_name": "赵六",
-  "avatar": null,
-  "role": "user",
-  "disabled": false,
-  "created_at": "2025-11-16 00:00:00",
-  "created_by_id": null,
-  "tenant_id": "default"
+  "success": true,
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": 51,
+    "username": "user_051",
+    "email": "user051@",
+    "full_name": "赵六",
+    "avatar": null,
+    "role": "user",
+    "disabled": false,
+    "created_at": "2025-11-16 00:00:00",
+    "created_by_id": null,
+    "tenant_id": "default"
+  }
 }
 ```
 
@@ -163,16 +184,21 @@ curl -s -X PUT \
 示例响应（200）：
 ```
 {
-  "id": 3,
-  "username": "user_002",
-  "email": "user002@",
-  "full_name": "张三(更新)",
-  "avatar": "https://i.p",
-  "role": "user",
-  "disabled": true,
-  "created_at": "2025-07-13 00:00:00",
-  "created_by_id": null,
-  "tenant_id": "default"
+  "success": true,
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": 3,
+    "username": "user_002",
+    "email": "user002@",
+    "full_name": "张三(更新)",
+    "avatar": "https://i.p",
+    "role": "user",
+    "disabled": true,
+    "created_at": "2025-07-13 00:00:00",
+    "created_by_id": null,
+    "tenant_id": "default"
+  }
 }
 ```
 
@@ -186,22 +212,30 @@ curl -s -X PUT \
 ---
 
 ## 5) DELETE /v1/users/{id} （删除用户）
-删除指定用户。成功返回 `204` 无正文。
+删除指定用户。成功返回 `200`，统一包裹 `Result.ok({})`。
 
 示例请求：
 ```
 curl -s -X DELETE -H "X-Tenant-ID: default" -H "Authorization: Bearer <token>" http://localhost:8000/v1/users/4 -i
 ```
 
-成功响应（204）：
+成功响应（200）：
 ```
-HTTP/1.1 204 No Content
+{
+  "success": true,
+  "code": 0,
+  "message": "ok",
+  "data": {}
+}
 ```
 
 未找到（404）：
 ```
 {
-  "detail": "User not found"
+  "success": false,
+  "code": 404,
+  "message": "用户不存在",
+  "data": {}
 }
 ```
 

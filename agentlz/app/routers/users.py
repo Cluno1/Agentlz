@@ -21,10 +21,10 @@ router = APIRouter(prefix="/v1", tags=["users"])
 @router.get("/users", response_model=Result)
 def list_users(
     request: Request,
-    _page: int = Query(1, ge=1),
-    _perPage: int = Query(10, ge=1, le=100),
-    _sort: str = Query("id"),
-    _order: str = Query("ASC"),
+    page: int = Query(1, ge=1),
+    perPage: int = Query(10, ge=1, le=100),
+    sort: str = Query("id"),
+    order: str = Query("ASC"),
     q: Optional[str] = Query(None),
     claims: Dict[str, Any] = Depends(require_auth),
 ):
@@ -32,7 +32,7 @@ def list_users(
     tenant_id = require_tenant_id(request)
     require_admin(claims, tenant_id)
     rows, total = user_service.list_users_service(
-        page=_page, per_page=_perPage, sort=_sort, order=_order, q=q, tenant_id=tenant_id
+        page=page, per_page=perPage, sort=sort, order=order, q=q, tenant_id=tenant_id
     )
     data_items = [UserItem(**r) for r in rows]
     # 统一返回结构：Result，真实数据置于 data 字段
