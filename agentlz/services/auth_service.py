@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import jwt
 from agentlz.config.settings import get_settings
 from agentlz.repositories import user_repository as repo
@@ -26,15 +26,14 @@ def login_service(*, tenant_id: str, username: str, password: str) -> str:
     )
 
 
-def register_service(*, tenant_id: str, username: str, email: Optional[str], password: str) -> Dict[str, Any]:
+def register_service(*, tenant_id: str, username: str, email: str, password: str) -> Dict[str, Any]:
     s = get_settings()
     table = getattr(s, "user_table_name", "users")
     exists_user = repo.get_user_by_username(username=username, tenant_id=tenant_id, table_name=table)
     if exists_user:
         raise ValueError("user_exists")
-    if email:
-        exists_email = repo.get_user_by_email(email=email, table_name=table)
-        if exists_email:
-            raise ValueError("email_exists")
+    exists_email = repo.get_user_by_email(email=email, table_name=table)
+    if exists_email:
+        raise ValueError("email_exists")
     payload = UserCreate(username=username, email=email, password=password)
     return user_service.create_user_service(payload=payload, tenant_id=tenant_id)
