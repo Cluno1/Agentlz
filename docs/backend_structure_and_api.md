@@ -58,7 +58,7 @@
   - 入参：文件流与元数据；
   - 行为：校验类型/大小/病毒扫描，返回 `doc_id` 与入库状态。
 - `POST /v1/docs/index`
-  - 行为：触发切分/嵌入/写入 FAISS（幂等，支持 `Idempotency-Key`）。
+  - 行为：触发切分/嵌入/写入 PostgreSQL（pgvector）（幂等，支持 `Idempotency-Key`）。
 - `GET /v1/docs/{doc_id}`
   - 行为：查询文档元数据与版本信息。
 - `GET /v1/health`

@@ -12,7 +12,7 @@
 - `app/`：应用入口层（HTTP/CLI/批处理）。暴露 `/v1/*` 接口或命令行入口。
 - `agents/`：编排层（不同场景的 Agent 构建与协作，含 MCP 交互）。
 - `services/`：业务服务层（领域逻辑封装，避免直接依赖 LLM 与持久化）。
-- `repositories/`：数据访问层（MySQL/FAISS 等持久化封装，不含业务逻辑）。
+- `repositories/`：数据访问层（MySQL/PostgreSQL（pgvector）等持久化封装，不含业务逻辑）。
 - `tools/`：工具封装层（LangChain `@tool`、三方适配器/桥接）。
 - `integrations/`：外部系统客户端（第三方 API 的可靠封装，带重试/限流）。
 - `core/`：基础设施与通用能力（日志、错误、重试、并发、模型工厂）。
@@ -33,7 +33,7 @@
   - 职责：纯业务逻辑封装；聚合调用 `repositories` 与 `integrations`；实现租户与权限校验。
   - 依赖：可依赖 `repositories`/`integrations`/`core`/`schemas`/`config`；不可依赖 `agents`/`app`。
 - `repositories` 层
-  - 职责：数据持久化访问（MySQL/FAISS）；提供原子化、可复用的数据操作。
+  - 职责：数据持久化访问（MySQL/PostgreSQL（pgvector））；提供原子化、可复用的数据操作。
   - 依赖：可依赖 `core`/`config`/第三方库；不包含业务分支；不可依赖 `services`。
 - `tools` 层
   - 职责：工具封装与适配（LangChain 工具、Markdown 渲染、检索等）。
@@ -70,7 +70,7 @@
 - `agentlz/app/`：HTTP/CLI 入口（如 `http_langserve.py`、`cli.py`）
 - `agentlz/agents/`：编排层（Planner/Multi/Markdown 等）
 - `agentlz/services/`：业务服务层
-- `agentlz/repositories/`：数据访问层（MySQL/FAISS）
+- `agentlz/repositories/`：数据访问层（MySQL/PostgreSQL（pgvector））
 - `agentlz/tools/`：工具封装层
 - `agentlz/integrations/`：外部系统集成
 - `agentlz/core/`：基础设施（`logger.py`、`model_factory.py` 等）
@@ -92,7 +92,7 @@
 
 ## 测试与质量保障（摘要）
 - 单元测试：`core`、`services` 与 `repositories` 的纯逻辑优先
-- 集成测试：覆盖关键编排与数据访问；使用本地 MySQL/FAISS
+- 集成测试：覆盖关键编排与数据访问；使用本地 MySQL/PostgreSQL（pgvector）
 - CI 质量门槛：`ruff`、`black`、`pytest`；关键模块设置覆盖率目标
 
 ## 实施要求
