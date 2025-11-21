@@ -23,7 +23,7 @@ def get_mcp_config_by_keyword(keyword: str) -> str:
             logger.warning("关键词为空，返回空列表")
             return json.dumps([], ensure_ascii=False)
         rows = search_mcp_by_keyword(kw, limit=3)
-        logger.info("🔍 按关键词查询 MCP 结果: %s", rows)
+        logger.info("🔍 按关键词 '%s' 查询 MCP 结果: %s", kw, rows)
         result = [to_tool_config(r) for r in rows]
         # 工具输出必须是字符串，避免下游 OpenAI Chat Completions 对 messages.content 的类型错误
         return json.dumps(result, ensure_ascii=False)

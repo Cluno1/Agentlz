@@ -18,6 +18,7 @@ SORT_MAPPING = {
 
 
 def _sanitize_sort(sort_field: str) -> str:
+    # 过滤排序字段
     return SORT_MAPPING.get(sort_field, "id")
 
 
@@ -31,6 +32,7 @@ def list_users(
     tenant_id: str,
     table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
+    # 分页查询用户列表
     """列表查询，返回行与总数"""
 
     order_dir = "ASC" if order.upper() == "ASC" else "DESC"
@@ -63,6 +65,7 @@ def list_users(
 
 
 def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
+    # 根据ID查询用户
     sql = text(
         f"""
         SELECT id, username, email, full_name, avatar, role, disabled, created_at, created_by_id, tenant_id
@@ -78,6 +81,7 @@ def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional
 
 
 def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]]:
+    # 根据邮箱查询用户
     sql = text(
         f"""
         SELECT id, username, email, tenant_id
@@ -92,6 +96,7 @@ def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]
 
 
 def get_user_by_username(*, username: str, table_name: str) -> Optional[Dict[str, Any]]:
+    # 根据用户名查询用户
     sql = text(
         f"""
         SELECT id, username, email, full_name, avatar, role, disabled, created_at, created_by_id, tenant_id, password_hash
@@ -110,6 +115,7 @@ def create_user(
     tenant_id: str,
     table_name: str,
 ) -> Dict[str, Any]:
+    # 创建用户并返回记录
     """插入用户并返回插入后的记录"""
 
     now = datetime.utcnow()
@@ -155,6 +161,7 @@ def update_user(
     tenant_id: str,
     table_name: str,
 ) -> Optional[Dict[str, Any]]:
+    # 更新用户信息
     """更新用户，如果不存在返回 None"""
 
     allowed_cols = [
@@ -198,6 +205,7 @@ def update_user(
 
 
 def delete_user(*, user_id: int, tenant_id: str, table_name: str) -> bool:
+    # 删除用户
     sql = text(f"DELETE FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id")
     engine = get_engine()
     with engine.begin() as conn:

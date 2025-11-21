@@ -19,14 +19,37 @@ class MCPChainExecutor:
 
     def assemble_mcp(self):
         # 将 WorkflowPlan.mcp_config 列表转换为 MultiServerMCPClient 需要的字典结构
-        mcp_dict = {
-            item.name: {
-                "transport": item.transport,
-                "command": item.command,
-                "args": item.args,
-            }
-            for item in self.plan.mcp_config
-        }
+        mcp_dict = {}
+        for item in self.plan.mcp_config:
+            transport = str(item.transport or "").lower()
+            if transport == "stdio":
+                mcp_dict[item.name] = {
+                    "transport": "stdio",
+                    "command": item.command,
+                    "args": item.args,
+                }
+            elif transport == "http":
+                url = item.command if isinstance(item.command, str) else ""
+                if not (url.startswith("http://") or url.startswith("https://")):
+                    url = item.args[-1] if item.args else ""
+                if not url:
+                    continue
+                mcp_dict[item.name] = {
+                    "transport": "streamable_http",
+                    "url": url,
+                }
+            elif transport == "sse":
+                url = item.command if isinstance(item.command, str) else ""
+                if not (url.startswith("http://") or url.startswith("https://")):
+                    url = item.args[-1] if item.args else ""
+                if not url:
+                    continue
+                mcp_dict[item.name] = {
+                    "transport": "sse",
+                    "url": url,
+                }
+            else:
+                continue
         try:
             self.client = MultiServerMCPClient(mcp_dict)
         except Exception as e:
