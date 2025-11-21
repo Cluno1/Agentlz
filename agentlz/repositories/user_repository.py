@@ -76,6 +76,18 @@ def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional
 
 
 
+def get_password_hash_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional[str]:
+    sql = text(
+        f"""
+        SELECT password_hash
+        FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
+        """
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"id": user_id, "tenant_id": tenant_id}).mappings().first()
+    return row.get("password_hash") if row else None
+
 
 def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]]:
     sql = text(
