@@ -64,6 +64,21 @@ def update_user(user_id: int, payload: UserUpdate, request: Request, claims: Dic
     # 管理员或本人可更新
     tenant_id = require_tenant_id(request)
     require_admin_or_self(user_id, claims, tenant_id)
+    is_self = str(user_id) == str(claims.get("sub"))
+    current_user = None
+    try:
+        current_user_id = int(str(claims.get("sub")))
+        current_user = user_service.get_user_service(user_id=current_user_id, tenant_id=tenant_id)
+    except Exception:
+        current_user = None
+    is_admin = bool(current_user and current_user.get("role") == "admin")
+    if payload.new_password is not None:
+        if is_self:
+            stored = user_service.get_password_hash_service(user_id=user_id, tenant_id=tenant_id) or ""
+            provided = str(payload.current_password or "")
+            if str(stored) != provided:
+                raise HTTPException(status_code=400, detail="当前密码错误")
+        payload.password = payload.new_password
     row = user_service.update_user_service(user_id=user_id, payload=payload, tenant_id=tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="用户不存在")

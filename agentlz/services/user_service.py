@@ -47,6 +47,11 @@ def get_user_service(*, user_id: int, tenant_id: str) -> Optional[Dict[str, Any]
     return row
 
 
+def get_password_hash_service(*, user_id: int, tenant_id: str) -> Optional[str]:
+    table_name, _ = _get_table_and_header()
+    return repo.get_password_hash_by_id(user_id=user_id, tenant_id=tenant_id, table_name=table_name)
+
+
 def create_user_service(*, payload: UserCreate, tenant_id: str) -> Dict[str, Any]:
     table_name, _ = _get_table_and_header()
     # 将明文 password 写入 password_hash 列（后续可替换为哈希）

@@ -6,7 +6,7 @@ annotated-doc==0.0.3
 annotated-types==0.7.0
 anyio==4.11.0
 attrs==25.4.0
-audioop-lts==0.2.2
+ audioop-lts==0.2.2; python_version >= "3.13"
 Authlib==1.6.5
 azure-ai-documentintelligence==1.0.2
 azure-core==1.36.0
@@ -168,8 +168,8 @@ soupsieve==2.8
 SpeechRecognition==3.14.3
 SQLAlchemy==2.0.44
 sse-starlette==3.0.3
-standard-aifc==3.13.0
-standard-chunk==3.13.0
+ standard-aifc==3.13.0; python_version >= "3.13"
+ standard-chunk==3.13.0; python_version >= "3.13"
 starlette==0.49.3
 sympy==1.14.0
 tenacity==9.1.2
