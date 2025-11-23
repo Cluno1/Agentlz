@@ -1,9 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import text
 
-from agentlz.repositories.db import get_engine
+from agentlz.core.database import get_mysql_engine
 
 
 SORT_MAPPING = {
@@ -57,7 +57,7 @@ def list_users(
         """
     )
 
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.connect() as conn:
         total = conn.execute(count_sql, params).scalar() or 0
         rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
@@ -72,7 +72,7 @@ def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional
         FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
         """
     )
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": user_id, "tenant_id": tenant_id}).mappings().first()
     return dict(row) if row else None
@@ -86,7 +86,7 @@ def get_password_hash_by_id(*, user_id: int, tenant_id: str, table_name: str) ->
         FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
         """
     )
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": user_id, "tenant_id": tenant_id}).mappings().first()
     return row.get("password_hash") if row else None
@@ -100,7 +100,7 @@ def get_user_by_email(*, email: str, table_name: str) -> Optional[Dict[str, Any]
         FROM `{table_name}` WHERE email = :e LIMIT 1
         """
     )
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"e": email}).mappings().first()
     return dict(row) if row else None
@@ -115,7 +115,7 @@ def get_user_by_username(*, username: str, table_name: str) -> Optional[Dict[str
         FROM `{table_name}` WHERE username = :u LIMIT 1
         """
     )
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"u": username}).mappings().first()
     return dict(row) if row else None
@@ -130,7 +130,7 @@ def create_user(
     # 创建用户并返回记录
     """插入用户并返回插入后的记录"""
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     sql = text(
         f"""
         INSERT INTO `{table_name}`
@@ -152,7 +152,7 @@ def create_user(
         "tenant_id": tenant_id,
     }
 
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.begin() as conn:
         result = conn.execute(sql, params)
         new_id = result.lastrowid
@@ -201,8 +201,7 @@ def update_user(
     sql = text(
         f"UPDATE `{table_name}` SET " + ", ".join(sets) + " WHERE id = :id AND tenant_id = :tenant_id"
     )
-
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.begin() as conn:
         result = conn.execute(sql, params)
         if result.rowcount == 0:
@@ -219,7 +218,7 @@ def update_user(
 def delete_user(*, user_id: int, tenant_id: str, table_name: str) -> bool:
     # 删除用户
     sql = text(f"DELETE FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id")
-    engine = get_engine()
+    engine = get_mysql_engine()
     with engine.begin() as conn:
         result = conn.execute(sql, {"id": user_id, "tenant_id": tenant_id})
         return result.rowcount > 0

@@ -21,6 +21,7 @@ def _get_conn() -> pymysql.connections.Connection:
         user=user,
         password=password,
         db=db,
+        database=db,
         charset="utf8mb4",
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
