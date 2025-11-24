@@ -2,53 +2,27 @@ import os
 import json
 from typing import Any, Dict, List
 
-import pymysql
-from agentlz.config.settings import get_settings
-
-# 创建MySQL连接
-def _get_conn() -> pymysql.connections.Connection:
-    """创建 MySQL 连接（DictCursor）。"""
-    # 使用Settings 读取配置
-    db_settings = get_settings()
-    host = db_settings.db_host or os.getenv("DB_HOST", "localhost")
-    port = int(db_settings.db_port or os.getenv("DB_PORT", "3306"))
-    user = db_settings.db_user or os.getenv("DB_USER", "root")
-    password = db_settings.db_password or os.getenv("DB_PASSWORD", "")
-    db = db_settings.db_name or os.getenv("DB_NAME", "agentlz")
-    return pymysql.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        db=db,
-        database=db,
-        charset="utf8mb4",
-        autocommit=True,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
+from sqlalchemy import text
+from agentlz.core.database import get_mysql_engine
 
 
 # 按关键词模糊搜索 MCP 配置
 def search_mcp_by_keyword(keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
     """按关键词在 name/description 模糊匹配，并按 trust_score 降序返回。"""
-    conn = _get_conn()  # 失败时直接抛异常，不做兜底
-    try:
-        like = f"%{keyword}%"
-        sql = (
-            "SELECT id, name, transport, command, args, category, trust_score, description "
-            "FROM mcp_agents "
-            "WHERE name LIKE %s OR description LIKE %s "
-            "ORDER BY trust_score DESC "
-            "LIMIT %s"
+    like = f"%{keyword}%"
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "SELECT id, name, transport, command, args, category, trust_score, description "
+                "FROM mcp_agents "
+                "WHERE name LIKE :like1 OR description LIKE :like2 "
+                "ORDER BY trust_score DESC "
+                "LIMIT :limit"
+            ),
+            {"like1": like, "like2": like, "limit": limit},
         )
-        with conn.cursor() as cur:
-            cur.execute(sql, (like, like, limit))
-            rows = cur.fetchall()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        rows = [dict(r._mapping) for r in result.fetchall()]
 
     # 规范化 args 字段为 List[str]
     for r in rows:
@@ -78,20 +52,15 @@ def get_mcp_agents_by_ids(ids: List[int]) -> List[Dict[str, Any]]:
     """根据 ID 列表批量查询 MCP 代理配置（MySQL）。"""
     if not ids:
         return []
-    placeholders = ",".join(["%s"] * len(ids))
-    sql = (
+    engine = get_mysql_engine()
+    names = {f"id{i}": int(v) for i, v in enumerate(ids)}
+    placeholders = ",".join([f":{k}" for k in names.keys()])
+    sql = text(
         f"SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE id IN ({placeholders})"
     )
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, ids)
-            rows = cur.fetchall()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    with engine.begin() as conn:
+        result = conn.execute(sql, names)
+        rows = [dict(r._mapping) for r in result.fetchall()]
     for r in rows:
         a = r.get("args")
         if isinstance(a, str):
@@ -119,24 +88,34 @@ def create_mcp_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         args_str = args
     else:
         args_str = json.dumps([], ensure_ascii=False)
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO mcp_agents (name, transport, command, args, description, category, trust_score) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (name, transport, command, args_str, description, category, trust_score),
-            )
-            new_id = cur.lastrowid
-            cur.execute(
-                "SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE id=%s",
-                (new_id,),
-            )
-            row = cur.fetchone()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "INSERT INTO mcp_agents (name, transport, command, args, description, category, trust_score) "
+                "VALUES (:name,:transport,:command,:args,:description,:category,:trust_score)"
+            ),
+            {
+                "name": name,
+                "transport": transport,
+                "command": command,
+                "args": args_str,
+                "description": description,
+                "category": category,
+                "trust_score": trust_score,
+            },
+        )
+        new_id = int(getattr(result, "lastrowid", 0) or 0)
+        if new_id == 0:
+            new_id = conn.execute(text("SELECT LAST_INSERT_ID() AS id")).scalar() or 0
+        row_res = conn.execute(
+            text(
+                "SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE id=:id"
+            ),
+            {"id": int(new_id)},
+        )
+        row_map = row_res.fetchone()._mapping
+        row = dict(row_map)
     if isinstance(row.get("args"), str):
         try:
             row["args"] = json.loads(row["args"])
@@ -150,7 +129,7 @@ def update_mcp_agent(agent_id: int, payload: Dict[str, Any]) -> Dict[str, Any] |
     """更新 MCP 代理记录并返回最新行（MySQL）。"""
     allowed = ["name", "transport", "command", "args", "description", "category", "trust_score"]
     sets: List[str] = []
-    values: List[Any] = []
+    params: Dict[str, Any] = {"id": int(agent_id)}
     for col in allowed:
         if col in payload and payload[col] is not None:
             val = payload[col]
@@ -159,26 +138,23 @@ def update_mcp_agent(agent_id: int, payload: Dict[str, Any]) -> Dict[str, Any] |
                     val = json.dumps(val, ensure_ascii=False)
                 elif not isinstance(val, str):
                     val = json.dumps([], ensure_ascii=False)
-            sets.append(f"{col}=%s")
-            values.append(val)
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            if sets:
-                sql = "UPDATE mcp_agents SET " + ", ".join(sets) + " WHERE id=%s"
-                cur.execute(sql, (*values, agent_id))
-            cur.execute(
-                "SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE id=%s",
-                (agent_id,),
-            )
-            row = cur.fetchone()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    if not row:
-        return None
+            sets.append(f"{col}=:{col}")
+            params[col] = val
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        if sets:
+            sql = text("UPDATE mcp_agents SET " + ", ".join(sets) + " WHERE id=:id")
+            conn.execute(sql, params)
+        row_res = conn.execute(
+            text(
+                "SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE id=:id"
+            ),
+            {"id": int(agent_id)},
+        )
+        row_obj = row_res.fetchone()
+        if not row_obj:
+            return None
+        row = dict(row_obj._mapping)
     if isinstance(row.get("args"), str):
         try:
             row["args"] = json.loads(row["args"])
