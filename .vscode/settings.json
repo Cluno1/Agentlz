@@ -16,19 +16,19 @@
             "password": "agentdb123456"
         },
         {
-            "mysqlOptions": {
-                "authProtocol": "default",
-                "enableSsl": "Disabled"
-            },
             "ssh": "Disabled",
             "previewLimit": 50,
             "server": "117.72.162.89",
-            "port": 13306,
-            "driver": "MySQL",
-            "username": "root",
+            "port": 5432,
+            "askForPassword": true,
+            "driver": "PostgreSQL",
+            "name": "postgres",
             "database": "agentlz",
-            "name": "mysql_agentlz",
-            "askForPassword": true
+            "username": "agentlz"
         }
+    ],
+    "cSpell.words": [
+        "agentlz",
+        "embedder"
     ]
 }
