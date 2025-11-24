@@ -21,6 +21,7 @@ class ChainContext:
         self.check_result: Optional[Any] = None
         self.errors: List[str] = []
         self.steps: List[Dict[str, Any]] = []
+        self.tool_calls: List[Dict[str, Any]] = []
         self.ai_agent_config_map: Dict[str, Any] = {}
         self.execution_history: str = ""
         self.current_task: str = ""
@@ -36,24 +37,27 @@ def _is_check_passed(res: Any) -> bool:
     """统一判断校验结果是否通过
 
     兼容常见返回结构：
-    - 字典：优先取布尔字段 `success/passed/ok/judge/is_ok`
-    - 对象：读取同名属性作为布尔判断
-    - 数值字段：≥1 视为通过
+    - 仅依据 judge/score 字段：
+      - judge 为 True 视为通过
+      - 或 score 数值 ≥ 80 视为通过
     """
     try:
         if res is None:
             return False
+        # 情况1：返回为字典结构（如从 JSON 解析的结果）——仅读取 judge/score
         if isinstance(res, dict):
-            for k in ("success", "passed", "ok", "judge", "is_ok"):
-                v = res.get(k)
-                if isinstance(v, bool):
-                    return v
-                if isinstance(v, (int, float)):
-                    return v >= 1
-        if hasattr(res, "success") and isinstance(getattr(res, "success"), bool):
-            return getattr(res, "success")
-        if hasattr(res, "passed") and isinstance(getattr(res, "passed"), bool):
-            return getattr(res, "passed")
+            j = res.get("judge")
+            if isinstance(j, bool):
+                return j
+            sc = res.get("score")
+            if isinstance(sc, (int, float)):
+                return sc >= 80
+            return False
+        # 情况2：返回为对象结构（如 CheckOutput 实例）——仅读取 judge/score
+        if hasattr(res, "judge") and isinstance(getattr(res, "judge"), bool):
+            return getattr(res, "judge")
+        if hasattr(res, "score") and isinstance(getattr(res, "score"), (int, float)):
+            return getattr(res, "score") >= 80
     except Exception:
         return False
     return False

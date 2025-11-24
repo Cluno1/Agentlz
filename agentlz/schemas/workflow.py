@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -18,3 +19,15 @@ class WorkflowPlan:
     mcp_config: List[MCPConfigItem]
     # 额外的执行指示（由 planner 给出，executor 可用于指导工具调用与步骤）
     instructions: str = ""
+
+
+class ToolCall(BaseModel):
+    name: str = ""
+    status: str = ""
+    input: str = ""
+    output: str = ""
+
+
+class ExecutorTrace(BaseModel):
+    calls: List[ToolCall] = Field(default_factory=list)
+    final_result: str = ""
