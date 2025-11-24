@@ -1,18 +1,3 @@
-/*
- Navicat Premium Data Transfer
-
- Source Server         : 117.72.162.89
- Source Server Type    : MySQL
- Source Server Version : 50744 (5.7.44)
- Source Host           : 117.72.162.89:13306
- Source Schema         : agentlz
-
- Target Server Type    : MySQL
- Target Server Version : 50744 (5.7.44)
- File Encoding         : 65001
-
- Date: 20/11/2025 17:42:29
-*/
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
@@ -50,7 +35,7 @@ CREATE TABLE `users`  (
   `disabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT '禁用登录：0否 1是',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建人ID，为空则为系统或自注册',
-  `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '租户ID（可选）',
+  `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '租户ID（可选 默认default）',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_users_username`(`username`) USING BTREE,
   UNIQUE INDEX `uk_users_email`(`email`) USING BTREE,

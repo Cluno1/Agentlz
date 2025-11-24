@@ -21,7 +21,7 @@ def login(payload: LoginPayload):
         if msg == "user_disabled":
             raise HTTPException(status_code=403, detail="用户已禁用")
         if msg == "invalid_password":
-            raise HTTPException(status_code=401, detail="密码错误")
+            raise HTTPException(status_code=400, detail="密码错误")
         raise HTTPException(status_code=400, detail="登录数据错误")
 
 
