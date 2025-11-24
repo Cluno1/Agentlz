@@ -121,6 +121,7 @@ pathable==0.4.4
 pathvalidate==3.3.1
 pbs-installer==2025.10.28
 pdfminer.six==20250506
+pgvector==0.4.1
 pillow==12.0.0
 pkginfo==1.12.1.2
 platformdirs==4.5.0
@@ -129,6 +130,7 @@ poetry-core==2.2.1
 posthog==6.9.1
 primp==0.15.0
 propcache==0.4.1
+psycopg2-binary==2.9.11
 puremagic==1.30
 py-key-value-aio==0.2.8
 py-key-value-shared==0.2.8
@@ -140,6 +142,7 @@ pydantic_core==2.41.5
 pydub==0.25.1
 Pygments==2.19.2
 PyJWT==2.10.1
+PyMySQL==1.1.2
 pyperclip==1.11.0
 pyproject_hooks==1.2.0
 python-dateutil==2.9.0.post0
@@ -200,4 +203,3 @@ xxhash==3.6.0
 yarl==1.22.0
 youtube-transcript-api==1.2.3
 zstandard==0.25.0
-PyMySQL>=1.1.0
