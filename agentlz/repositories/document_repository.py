@@ -5,6 +5,28 @@ from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
 
+"""文档仓储（MySQL）
+
+职责
+- 提供文档的增删改查（CRUD）能力，严格基于多租户字段 `tenant_id` 做数据隔离
+- 所有 SQL 使用参数化形式（sqlalchemy.text + 绑定参数），避免 SQL 注入
+- 对排序字段进行白名单映射，防止外部传入任意列名参与 ORDER BY
+
+表结构对齐（参见 `docs/deploy/sql/init_tenant.sql` 的 `document` 表）
+- 主键：`id` varchar(64)
+- 隔离：`tenant_id` varchar(64)
+- 其他：`uploaded_by_user_id`、`status`、`upload_time`、`title`、`content` 等
+
+性能与索引
+- 常见列表查询包含：租户过滤、状态过滤、上传人过滤、标题模糊搜索
+- 已建立索引：`tenant_id`、`uploaded_by_user_id`、(`tenant_id`,`status`)
+- 大字段 `content` 进行 LIKE 模糊搜索会较慢，生产环境可考虑全文索引或外部检索
+
+使用约定
+- 更新接口不允许修改 `id` 和 `tenant_id`（主键与隔离维度）
+- `upload_time` 默认由系统写入；如确需修改，需扩展白名单
+"""
+
 
 # 排序字段白名单映射（外部字段名 -> 数据库列名）
 # 目的：防止直接拼接用户输入到 SQL 导致注入；仅允许映射中出现的字段参与 ORDER BY
@@ -41,7 +63,8 @@ def list_documents(
     sort_col = _sanitize_sort(sort)
     offset = (page - 1) * per_page
 
-    # 组装 WHERE 条件与参数（强制带租户过滤）
+    # 组装 WHERE 条件与参数（强制带租户过滤）。
+    # 安全：始终通过绑定参数传值，不拼接用户输入到 SQL 文本。
     where = ["tenant_id = :tenant_id"]
     params: Dict[str, Any] = {"tenant_id": tenant_id}
     if q:
@@ -115,7 +138,7 @@ def create_document(
     engine = get_mysql_engine()
     with engine.begin() as conn:
         conn.execute(sql, params)
-        # 读取并返回插入后的记录
+        # 读取并返回插入后的记录（与插入参数保持一致，避免脏读）
         ret = conn.execute(
             text(
                 f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"

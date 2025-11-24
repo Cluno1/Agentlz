@@ -5,6 +5,25 @@ from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
 
+"""租户仓储（MySQL）
+
+职责
+- 提供租户的增删改查（CRUD）能力
+- 所有 SQL 使用参数化形式（sqlalchemy.text + 绑定参数），避免 SQL 注入
+- 对排序字段进行白名单映射，防止外部传入任意列名参与 ORDER BY
+
+表结构对齐（参见 `docs/deploy/sql/init_tenant.sql` 的 `tenant` 表）
+- 主键：`id` varchar(64)
+- 基本信息：`name`、`disabled`、`created_at`、`updated_at`
+
+性能与索引
+- 已建立索引：`name` 唯一索引、`disabled` 状态索引
+- 常见查询包含：名称精确查找、状态筛选、分页排序
+
+使用约定
+- 更新接口不允许修改主键 `id`
+"""
+
 
 # 排序字段白名单映射（外部字段名 -> 数据库列名）
 SORT_MAPPING = {
@@ -63,7 +82,7 @@ def list_tenants(
 
 
 def get_tenant_by_id(*, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
-    # 根据租户ID查询
+    # 根据租户ID查询（精确匹配主键）
     sql = text(
         f"""
         SELECT id, name, disabled, created_at, updated_at
@@ -145,7 +164,7 @@ def update_tenant(
     params: Dict[str, Any] = {"id": tenant_id}
     for col in allowed_cols:
         if col in payload and payload[col] is not None:
-            # disabled 统一转为 tinyint(1)
+            # disabled 统一转为 tinyint(1)，确保与表结构一致
             if col == "disabled":
                 params[col] = int(bool(payload[col]))
             else:

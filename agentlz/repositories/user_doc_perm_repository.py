@@ -5,6 +5,26 @@ from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
 
+"""用户-文档权限仓储（MySQL）
+
+职责
+- 管理用户对文档的权限关系（admin/read/write/none）
+- 所有 SQL 使用参数化形式（sqlalchemy.text + 绑定参数），避免 SQL 注入
+- 对排序字段进行白名单映射，防止外部传入任意列名参与 ORDER BY
+
+表结构对齐（参见 `docs/deploy/sql/init_tenant.sql` 的 `user_doc_permission` 表）
+- 主键：`id` bigint(20)
+- 唯一约束：`user_id + doc_id`
+- 字段：`perm` 枚举、`created_at`
+
+性能与索引
+- 已建立索引：`user_id`、`doc_id`、唯一键 (`user_id`,`doc_id`)
+- 常见查询包含：按用户或文档过滤、分页排序
+
+使用约定
+- 更新接口仅允许修改权限 `perm`
+"""
+
 
 # 排序字段白名单映射（外部字段名 -> 数据库列名）
 SORT_MAPPING = {
