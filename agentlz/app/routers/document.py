@@ -2,12 +2,13 @@ from __future__ import annotations
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import Response
-
+from agentlz.core.logger import setup_logging
 from agentlz.schemas.document import DocumentUpdate
 from agentlz.schemas.responses import Result
 from agentlz.services import document_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
 
+logger = setup_logging()
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
@@ -63,6 +64,7 @@ def list_documents(
     type: str = Query("self", regex="^(system|self|tenant)$", description="文档类型")
 ):
     """分页查询文档列表（支持多类型查询）"""
+    logger.info(f"list_documents: page={page}, per_page={per_page}, sort={sort}, order={order}, q={q}, type={type}")
     tenant_id = require_tenant_id(request)
     rows, total = document_service.list_documents_service(
         page=page,
@@ -81,11 +83,25 @@ def list_documents(
 def create_document(
     request: Request,
     payload: Dict[str, Any],
+    type: str = Query("self", regex="^(system|self|tenant)$", description="文档类型"),
     claims: Dict[str, Any] = Depends(require_auth)
 ):
-    """创建新文档（需要管理员权限）"""
+    """创建新文档（需要管理员权限）
+    参数
+    - payload: 创建所需字段字典，包含：
+        document: 文档内容或文件数据
+        document_type: 文档类型（pdf, doc, docx, md, txt, ppt, pptx, xls, xlsx, csv）
+        title: 文档标题
+        uploaded_by_user_id: 上传用户ID
+        tags: 标签（可选）
+        description: 描述（可选）
+        meta_https: 元数据链接（可选）
+    - type: 文档类型（system, self, tenant）
+    
+    """
     tenant_id = require_tenant_id(request)
     row = document_service.create_document_service(
+        type=type,
         payload=payload,
         tenant_id=tenant_id,
         claims=claims

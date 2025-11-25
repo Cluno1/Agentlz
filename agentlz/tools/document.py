@@ -1,3 +1,4 @@
+from typing import Any, Dict, Optional
 # 解析文档成md格式
 def parse_document_to_md(payload: Dict[str, Any]) -> Optional[str]:
     """解析文档内容为 Markdown 格式，支持多种文档类型

@@ -537,7 +537,13 @@ def list_documents_service(
     return rows, total
 
 # todo: 后续拓展, 目前仅仅支持用户上传markdown格式文档
-def create_document_service(*, payload: Dict[str, Any], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def create_document_service(
+    *, 
+    type: str,
+    payload: Dict[str, Any], 
+    tenant_id: str, 
+    claims: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """创建文档并返回插入后的记录，支持多种文档类型。
 
     说明：
@@ -557,6 +563,7 @@ def create_document_service(*, payload: Dict[str, Any], tenant_id: str, claims: 
       - `description`: 描述（可选）
       - `meta_https`: 元数据链接（可选）
     - `tenant_id`: 租户标识。
+    - `type`: 文档类型（system, self, tenant）
 
     返回：
     - 新建的记录字典；其中 `upload_time` 字段会被统一转换为字符串。
