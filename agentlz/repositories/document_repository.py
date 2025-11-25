@@ -76,7 +76,7 @@ def list_documents(
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
     list_sql = text(
         f"""
-        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content
+        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https
         FROM `{table_name}`
         {where_sql}
         ORDER BY {sort_col} {order_dir}
@@ -95,7 +95,7 @@ def get_document_by_id(*, doc_id: str, tenant_id: str, table_name: str) -> Optio
     # 根据文档ID查询（租户隔离）
     sql = text(
         f"""
-        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content
+        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https
         FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
         """
     )
@@ -117,11 +117,33 @@ def create_document(
     # 生成 ID（若调用方未提供）
     doc_id = (payload.get("id") or __import__("uuid").uuid4().hex)[:64]
     now = datetime.now(timezone.utc)
+    
+    # 构建动态SQL，支持可选字段
+    columns = ["id", "tenant_id", "uploaded_by_user_id", "status", "upload_time", "title", "content"]
+    values = [":id", ":tenant_id", ":uploaded_by_user_id", ":status", ":upload_time", ":title", ":content"]
+    
+    # 添加可选字段
+    if payload.get("type") is not None:
+        columns.append("type")
+        values.append(":type")
+    
+    if payload.get("tags") is not None:
+        columns.append("tags")
+        values.append(":tags")
+    
+    if payload.get("description") is not None:
+        columns.append("description")
+        values.append(":description")
+    
+    if payload.get("meta_https") is not None:
+        columns.append("meta_https")
+        values.append(":meta_https")
+    
     sql = text(
         f"""
         INSERT INTO `{table_name}`
-        (id, tenant_id, uploaded_by_user_id, status, upload_time, title, content)
-        VALUES (:id, :tenant_id, :uploaded_by_user_id, :status, :upload_time, :title, :content)
+        ({', '.join(columns)})
+        VALUES ({', '.join(values)})
         """
     )
 
@@ -134,6 +156,21 @@ def create_document(
         "title": payload.get("title"),
         "content": payload.get("content"),
     }
+    
+    # 添加可选参数
+    if "type" in columns:
+        params["type"] = payload.get("type")
+    if "tags" in columns:
+        # 将标签列表转换为逗号分隔的字符串
+        tags = payload.get("tags", [])
+        if isinstance(tags, list):
+            params["tags"] = ",".join(str(tag) for tag in tags)
+        else:
+            params["tags"] = str(tags)
+    if "description" in columns:
+        params["description"] = payload.get("description")
+    if "meta_https" in columns:
+        params["meta_https"] = payload.get("meta_https")
 
     engine = get_mysql_engine()
     with engine.begin() as conn:
@@ -141,7 +178,7 @@ def create_document(
         # 读取并返回插入后的记录（与插入参数保持一致，避免脏读）
         ret = conn.execute(
             text(
-                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
+                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
             ),
             {"id": doc_id, "tenant_id": tenant_id},
         ).mappings().first()
@@ -163,6 +200,10 @@ def update_document(
         "status",
         "title",
         "content",
+        "type",
+        "tags",
+        "description",
+        "meta_https",
         # 注：upload_time 通常由系统写入，不建议在普通更新中修改；如有需要可加入白名单
     ]
 
@@ -170,8 +211,16 @@ def update_document(
     params: Dict[str, Any] = {"id": doc_id, "tenant_id": tenant_id}
     for col in allowed_cols:
         if col in payload and payload[col] is not None:
+            if col == "tags":
+                # 将标签列表转换为逗号分隔的字符串
+                tags = payload[col]
+                if isinstance(tags, list):
+                    params[col] = ",".join(str(tag) for tag in tags)
+                else:
+                    params[col] = str(tags)
+            else:
+                params[col] = payload[col]
             sets.append(f"{col} = :{col}")
-            params[col] = payload[col]
 
     if not sets:
         # 没有任何变更，直接返回当前记录
@@ -187,7 +236,7 @@ def update_document(
             return None
         ret = conn.execute(
             text(
-                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
+                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
             ),
             {"id": doc_id, "tenant_id": tenant_id},
         ).mappings().first()
