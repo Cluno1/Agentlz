@@ -1,3 +1,4 @@
+import json
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
@@ -14,7 +15,7 @@ def _build_agent_and_prompt():
     # 提示词：system 为校验规则，human 注入 objectMsg 与 factMsg 两段文本
     prompt = ChatPromptTemplate.from_messages([
         ("system", CHECK_SYSTEM_PROMPT),
-        ("human", "目标 (Object):\n```\n{objectMsg}\n```\n\n事实 (Fact):\n```\n{factMsg}\n```")
+        ("human", "目标 (Object):\n```\n{objectMsg}\n```\n\n事实 (Fact):\n```\n{factMsg}\n```\n\n工具MCP调用日志(JSON):\n```\n{toolCallsJson}\n```")
     ])
     return agent, prompt
 
@@ -22,7 +23,11 @@ def run_check(input_data: CheckInput) -> CheckOutput:
     # 构建代理与提示词模板（代理使用 response_format=CheckOutput 约束结构化输出）
     agent, prompt = _build_agent_and_prompt()
     # 将输入模型字段注入到 human 模板，得到完整消息序列（含 system 与 human）
-    msgs = prompt.format_messages(objectMsg=input_data.objectMsg, factMsg=input_data.factMsg)
+    msgs = prompt.format_messages(
+        objectMsg=input_data.objectMsg,
+        factMsg=input_data.factMsg,
+        toolCallsJson=json.dumps(getattr(input_data, "toolCalls", None) or [])
+    )
     # 调用代理：传入格式化后的消息序列，保持上下文完整
     resp = agent.invoke({"messages": msgs})
     # 若代理返回结构化字段（与 structured_response 一致），直接取用
@@ -35,7 +40,11 @@ def run_check(input_data: CheckInput) -> CheckOutput:
 async def arun_check(input_data: CheckInput) -> CheckOutput:
     # 异步版本：逻辑与 run_check 相同，仅调用改为异步
     agent, prompt = _build_agent_and_prompt()
-    msgs = prompt.format_messages(objectMsg=input_data.objectMsg, factMsg=input_data.factMsg)
+    msgs = prompt.format_messages(
+        objectMsg=input_data.objectMsg,
+        factMsg=input_data.factMsg,
+        toolCallsJson=json.dumps(getattr(input_data, "toolCalls", None) or [])
+    )
     resp = await agent.ainvoke({"messages": msgs})
     if isinstance(resp, dict) and resp.get("structured_response") is not None:
         return resp["structured_response"]

@@ -45,7 +45,8 @@ class CheckHandler(Handler):
                     status = c.get("status", "")
                     inp = c.get("input", "")
                     out = c.get("output", "")
-                    tool_rows.append(f"{i:02d}. {name} -> {status}\n输入: {inp}\n输出: {out}")
+                    server = c.get("server", "")
+                    tool_rows.append(f"{i:02d}. {name} -> {status}\n服务器: {server}\n输入: {inp}\n输出: {out}")
                 tool_process = "\n\n".join(tool_rows)
             else:
                 tool_process = "无工具调用"
@@ -62,7 +63,7 @@ class CheckHandler(Handler):
                 "\n\n最终执行结果:\n" + final_result
             )
             # 异步调用检查 Agent，写入检查结果并记录步骤
-            res = await arun_check(CheckInput(objectMsg=object_msg, factMsg=fact_msg))
+            res = await arun_check(CheckInput(objectMsg=object_msg, factMsg=fact_msg, toolCalls=calls))
             ctx.check_result = res
             ctx.steps.append({"name": "check", "status": "passed", "output": ctx.check_result})
         except Exception as e:

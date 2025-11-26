@@ -26,8 +26,10 @@ class ToolCall(BaseModel):
     status: str = ""
     input: str = ""
     output: str = ""
+    server: str = ""
 
 
 class ExecutorTrace(BaseModel):
     calls: List[ToolCall] = Field(default_factory=list)
+    actual_chain: List[str] = Field(default_factory=list)
     final_result: str = ""

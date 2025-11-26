@@ -72,6 +72,36 @@ def get_mcp_agents_by_ids(ids: List[int]) -> List[Dict[str, Any]]:
             r["args"] = []
     return rows
 
+# 根据 (name, transport, command) 组合批量查询 MCP 配置，利用联合唯一索引精确命中
+def get_mcp_agents_by_unique(triplets: List[tuple[str, str, str]]) -> List[Dict[str, Any]]:
+    if not triplets:
+        return []
+    engine = get_mysql_engine()
+    clauses: List[str] = []
+    params: Dict[str, Any] = {}
+    for i, (n, t, c) in enumerate(triplets):
+        params[f"n{i}"] = str(n)
+        params[f"t{i}"] = str(t)
+        params[f"c{i}"] = str(c)
+        clauses.append(f"(name=:n{i} AND transport=:t{i} AND command=:c{i})")
+    sql = text(
+        "SELECT id, name, transport, command, args, category, trust_score, description FROM mcp_agents WHERE "
+        + " OR ".join(clauses)
+    )
+    with engine.begin() as conn:
+        result = conn.execute(sql, params)
+        rows = [dict(r._mapping) for r in result.fetchall()]
+    for r in rows:
+        a = r.get("args")
+        if isinstance(a, str):
+            try:
+                r["args"] = json.loads(a)
+            except Exception:
+                r["args"] = [a]
+        elif not isinstance(a, list):
+            r["args"] = []
+    return rows
+
 # 插入 MCP 代理记录
 def create_mcp_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     """插入 MCP 代理记录并返回完整行（MySQL）。"""

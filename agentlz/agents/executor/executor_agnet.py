@@ -111,19 +111,8 @@ class MCPChainExecutor:
             return "执行器错误：代理执行失败。"
         final_text = response["messages"][-1].content if isinstance(response, dict) else str(response)
         logs = getattr(handler, "calls", [])
-        # 分支1：优先使用回调拦截到的真实工具调用日志（logs）
-        # - 将结构化日志保存到 last_calls/last_final
-        # - 构造可读摘要（含每次调用的输入/输出）并返回，便于在校验阶段展示
-        if logs:
-            self.last_calls = list(logs)
-            self.last_final = str(final_text)
-            rows = []
-            for i, c in enumerate(logs, 1):
-                rows.append(f"{i:02d}. {c.get('name','')} -> {c.get('status','')}\n输入: {c.get('input','')}\n输出: {c.get('output','')}")
-            process = "\n\n".join(rows)
-            return ("工具调用摘要:\n" + process + "\n\n最终结果:\n" + str(final_text)).strip()
-            
-        # 分支2：如果模型返回了结构化响应（ExecutorTrace），解析其中的 calls/final_result
+
+        # 分支1：如果模型返回了结构化响应（ExecutorTrace），解析其中的 calls/final_result
         # - 同样转换为结构化 last_calls，并生成可读摘要文本
         if isinstance(response, dict) and response.get("structured_response") is not None:
             sr = response["structured_response"]
@@ -134,13 +123,37 @@ class MCPChainExecutor:
                 status = getattr(c, "status", "")
                 inp = getattr(c, "input", "")
                 out = getattr(c, "output", "")
-                sr_calls.append({"name": str(name), "status": str(status), "input": str(inp), "output": str(out)})
-                rows.append(f"{i:02d}. {name} -> {status}\n输入: {inp}\n输出: {out}")
+                server_name = getattr(c, "server", "")
+                sr_calls.append({"name": str(name), "status": str(status), "input": str(inp), "output": str(out), "server": str(server_name)})
+                rows.append(f"{i:02d}. {name} -> {status}\n服务器: {server_name}\n输入: {inp}\n输出: {out}")
             process = "\n\n".join(rows)
             final_result = getattr(sr, "final_result", "")
             self.last_calls = sr_calls
             self.last_final = str(final_result)
-            return ("工具调用摘要:\n" + process + "\n\n最终结果:\n" + str(final_result)).strip()
+            return final_result
+            
+        # 分支2：优先使用回调拦截到的真实工具调用日志（logs）
+        # - 将结构化日志保存到 last_calls/last_final
+        # - 构造可读摘要（含每次调用的输入/输出）并返回，便于在校验阶段展示
+        if logs:
+            rows = []
+            enriched = []
+            chain = self.plan.execution_chain or []
+            for i, c in enumerate(logs, 1):
+                server_name = chain[i - 1] if 0 <= (i - 1) < len(chain) else ""
+                cc = {**c, "server": server_name}
+                enriched.append(cc)
+                rows.append(
+                    f"{i:02d}. {c.get('name','')} -> {c.get('status','')}\n服务器: {server_name}\n输入: {c.get('input','')}\n输出: {c.get('output','')}"
+                )
+            self.last_calls = enriched
+            self.last_final = str(final_text)
+            process = "\n\n".join(rows)
+            chain_text = ", ".join(chain) if chain else ""
+            prefix = ("实际调用链:\n" + chain_text + "\n\n") if chain_text else ""
+            return (prefix + "工具调用摘要:\n" + process + "\n\n最终结果:\n" + str(final_text)).strip()
+            
+      
 
         self.last_calls = []
         self.last_final = str(final_text)

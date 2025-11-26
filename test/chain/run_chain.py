@@ -18,9 +18,10 @@ def main():
     ctx = asyncio.run(run_chain(user_input, max_steps=6))
     print("输入:", user_input)
     print("步骤轨迹:\n" + pretty_steps(ctx.steps))
-    print("规划(plan):", ctx.plan)
-    print("执行输出(fact_msg):", ctx.fact_msg)
-    print("校验(check_result):", ctx.check_result)
+    print("规划(plan):\n", ctx.plan)
+    print("执行输出(fact_msg):\n", ctx.fact_msg)
+    print("工具调用(tool_calls):\n", ctx.tool_calls)
+    print("校验(check_result):\n", ctx.check_result)
     if ctx.errors:
         print("错误列表:", ctx.errors)
 

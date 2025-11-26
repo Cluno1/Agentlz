@@ -1,4 +1,4 @@
-# 责任链（Planner → Executor → Check）开发说明
+# 责任链（Planner → Executor → Check）开发说明（最新实现）
 
 本开发文档基于 `d:\PyCharm\AgentCode\Agentlz\docs\dev.md` 的工作流与分层规范，给出三类 Agent（planner/executor/check）的责任链实现思路与落地指南。本文仅规划设计与接口，不在本次提交中实现代码。
 
@@ -66,17 +66,22 @@ graph TD
 
 ## 关键概念与数据结构
 - `ChainContext`
-  - 字段：`user_input`、`plan`、`fact_msg`、`check_result`、`errors`、`steps`，以及：`ai_agent_config_map/execution_history/current_task/max_step/session_id/tenant_id`
-  - 作用：贯穿链路的数据容器，记录上下文与中间结果与运行元数据，便于日志与审计。
+  - 字段：`user_input`、`plan`、`fact_msg`、`check_result`、`errors`、`steps`、`tool_calls`，以及：`ai_agent_config_map/execution_history/current_task/max_step/session_id/tenant_id`
+  - 作用：贯穿链路的数据容器，记录上下文与中间结果与运行元数据；其中 `steps` 仅保留高层节点轨迹（root/planner/executor/check），`tool_calls` 存放执行器拦截到的每次 MCP 工具调用的结构化日志（name/status/input/output）。
 - `Handler`
   - 接口：`can_handle(ctx)`、`handle(ctx)`，均为 `async`。
   - 约定：节点只关注本步骤的职责，其他交由下一个节点。
 - `PlannerHandler`
   - 依据可信度表或自我规划生成 `WorkflowPlan`；将 `execution_chain/mcp_config/instructions` 写入 `ctx.plan`。
 - `ExecutorHandler`
-  - 复用现有 `MCPChainExecutor.execute_chain` 执行计划；将结果写入 `ctx.factMsg`，并记录每步输出到 `ctx.steps`。
+  - 复用现有 `MCPChainExecutor.execute_chain` 执行计划；将“工具调用摘要 + 最终结果”写入 `ctx.fact_msg`；不再把每次工具调用写入 `steps`，而是写入 `ctx.tool_calls`（结构化）。
 - `CheckHandler`
-  - 复用 `get_check_agent()` 对 `objectMsg/factMsg` 进行结构化校验；将结论与评分写入 `ctx.checkResult`。
+  - 复用 `check_agent` 对 `objectMsg/factMsg` 进行结构化校验；按如下方式重构 `fact_msg`：
+    - Agent流程：来自 `ctx.steps` 的高层轨迹
+    - 执行器MCP流程：来自 `ctx.tool_calls` 的工具调用明细（输入/输出）；为空则标记“无工具调用”
+    - 最终执行结果：从执行器返回的摘要文本中提取“最终结果”段
+  - 返回类型强制为 `CheckOutput`；不是对象则视为错误。
+  - 通过判定使用 `_is_check_passed`，仅依据 `judge=True` 或 `score>=80`。
 
 ## 生命周期与数据流
 - 输入：入口层收到用户请求，构造 `ChainContext(user_input=...)`。
@@ -93,6 +98,7 @@ graph TD
 
 ## 日志与指标
 - 统一使用 `agentlz/core/logger.py`：结构化日志，包含 `request_id/tenant_id/agent_id/latency_ms`。
+- 执行器通过回调拦截（`BaseCallbackHandler`）记录真实 I/O，作为权威数据源；启用 `response_format=ExecutorTrace` 仅作为兜底结构化返回。
 - 指标建议：
   - `planner_calls_total`、`planner_errors_total`、`planner_latency_ms`
   - `executor_steps_total`、`executor_errors_total`、`executor_latency_ms`
@@ -140,6 +146,11 @@ from agentlz.services.chain.chain_service import run_chain
 - `PlannerHandler.next` → `ExecutorHandler`（文件：`step2_executor.py`）
 - `ExecutorHandler.next` → `CheckHandler`（文件：`step3_check.py`）
 - `CheckHandler.next` → 通过则 `None`，未通过则重置 `ctx.plan` 并回到 `PlannerHandler`
+
+## 结构化模型（执行器）
+- `ToolCall`（`agentlz/schemas/workflow.py`）：`name/status/input/output`
+- `ExecutorTrace`（`agentlz/schemas/workflow.py`）：`calls: List[ToolCall]`、`final_result: str`
+  - 执行器创建代理时声明 `response_format=ExecutorTrace`，在无回调日志时解析结构化响应作为兜底。
 
 ## 接入入口层
 - CLI：在 `agentlz/app/cli.py` 增加命令 `chain-run`，从命令行触发责任链并打印结果与指标。

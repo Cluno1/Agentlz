@@ -22,6 +22,21 @@ class PlannerHandler(Handler):
             ctx.plan = plan_workflow_chain(str(ctx.user_input))
             # 记录成功步骤，输出为结构化计划对象
             ctx.steps.append({"name": "planner", "status": "passed", "output": ctx.plan})
+            # 基于 (name, transport, command) 构建一次链路内的 name→id 映射缓存
+            try:
+                from agentlz.repositories.mcp_repository import get_mcp_agents_by_unique
+                items = getattr(ctx.plan, "mcp_config", []) or []
+                triplets = [
+                    (getattr(it, "name", ""), getattr(it, "transport", ""), getattr(it, "command", ""))
+                    for it in items
+                ]
+                rows = get_mcp_agents_by_unique([t for t in triplets if all(t)]) if triplets else []
+                # 由于同名不同传输/命令也允许存在，这里以“计划内唯一出现”为前提，将 name 映射到对应 id
+                name_to_id = {str(r["name"]): int(r["id"]) for r in rows if "id" in r and "name" in r}
+                ctx.ai_agent_config_map["mcp_name_to_id"] = name_to_id
+                ctx.ai_agent_config_map["mcp_selected_rows"] = rows
+            except Exception:
+                pass
         except Exception:
             # 记录错误并标记失败步骤
             ctx.errors.append("planner_failed")
