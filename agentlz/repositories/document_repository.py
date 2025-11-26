@@ -250,3 +250,233 @@ def delete_document(*, doc_id: str, tenant_id: str, table_name: str) -> bool:
     with engine.begin() as conn:
         result = conn.execute(sql, {"id": doc_id, "tenant_id": tenant_id})
         return result.rowcount > 0
+
+
+def get_document_with_names_by_id(
+    *,
+    doc_id: str,
+    tenant_id: str,
+    table_name: str,
+    user_table_name: str,
+    tenant_table_name: str,
+) -> Optional[Dict[str, Any]]:
+    '''
+    获取文档信息（按租户隔离），包含租户名称和上传用户名
+    参数
+    - doc_id: 文档ID
+    - tenant_id: 租户ID
+    - table_name: 文档表名
+    - user_table_name: 用户表名
+    - tenant_table_name: 租户表名
+    返回
+    - 文档信息（包含租户名称和上传用户名）
+    '''
+    sql = text(
+        f"""
+        SELECT 
+            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.content, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            t.name AS tenant_name,
+            u.full_name AS uploaded_by_user_name,
+            u.username AS uploaded_by_user_username,
+            u.avatar AS uploaded_by_user_avatar,
+            u.email AS uploaded_by_user_email
+        FROM `{table_name}` d
+        LEFT JOIN `{tenant_table_name}` t ON d.tenant_id = t.id
+        LEFT JOIN `{user_table_name}` u ON u.id = d.uploaded_by_user_id
+        WHERE d.id = :id AND d.tenant_id = :tenant_id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"id": doc_id, "tenant_id": tenant_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def list_documents_with_names(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    tenant_id: str,
+    table_name: str,
+    user_table_name: str,
+    tenant_table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    '''
+    获取文档列表（按租户隔离）
+    参数
+    - page: 页码
+    - per_page: 每页数量
+    - sort: 排序字段
+    - order: 排序方向（ASC/DESC）
+    - q: 搜索查询字符串
+    - tenant_id: 租户ID
+    - table_name: 文档表名
+    - user_table_name: 用户表名
+    - tenant_table_name: 租户表名
+    返回
+    - 文档列表（包含租户名称和上传用户名）
+    - 总文档数
+    '''
+    order_dir = "ASC" if order.upper() == "ASC" else "DESC"
+    sort_col = _sanitize_sort(sort)
+    offset = (page - 1) * per_page
+
+    where = ["d.tenant_id = :tenant_id"]
+    params: Dict[str, Any] = {"tenant_id": tenant_id}
+    if q:
+        where.append("(d.title LIKE :q OR d.content LIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = "WHERE " + " AND ".join(where)
+
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` d {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT 
+            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            t.name AS tenant_name,
+            u.full_name AS uploaded_by_user_name,
+            u.username AS uploaded_by_user_username,
+            u.avatar AS uploaded_by_user_avatar,
+            u.email AS uploaded_by_user_email
+        FROM `{table_name}` d
+        LEFT JOIN `{tenant_table_name}` t ON d.tenant_id = t.id
+        LEFT JOIN `{user_table_name}` u ON u.id = d.uploaded_by_user_id
+        {where_sql}
+        ORDER BY d.{sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)
+
+
+def list_self_documents_with_names(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    user_id: int,
+    table_name: str,
+    user_table_name: str,
+    tenant_table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    '''
+    获取用户上传的文档列表（按租户隔离）
+    参数
+    - page: 页码
+    - per_page: 每页数量
+    - sort: 排序字段
+    - order: 排序方向（ASC/DESC）
+    - q: 搜索查询字符串
+    - user_id: 用户ID
+    - table_name: 文档表名
+    - user_table_name: 用户表名
+    - tenant_table_name: 租户表名
+    返回
+    - 文档列表（包含租户名称和上传用户名）
+    - 总文档数
+    '''
+    order_dir = "ASC" if order.upper() == "ASC" else "DESC"
+    sort_col = _sanitize_sort(sort)
+    offset = (page - 1) * per_page
+
+    where = ["d.tenant_id = :tenant_id", "d.uploaded_by_user_id = :user_id"]
+    params: Dict[str, Any] = {"tenant_id": "default", "user_id": user_id}
+    if q:
+        where.append("(d.title LIKE :q OR d.content LIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = "WHERE " + " AND ".join(where)
+
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` d {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT 
+            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            t.name AS tenant_name,
+            u.full_name AS uploaded_by_user_name,
+            u.username AS uploaded_by_user_username,
+            u.avatar AS uploaded_by_user_avatar,
+            u.email AS uploaded_by_user_email
+        FROM `{table_name}` d
+        LEFT JOIN `{tenant_table_name}` t ON d.tenant_id = t.id
+        LEFT JOIN `{user_table_name}` u ON u.id = d.uploaded_by_user_id
+        {where_sql}
+        ORDER BY d.{sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)
+
+
+def list_tenant_documents_with_permission_with_names(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    user_id: int,
+    tenant_id: str,
+    table_name: str,
+    perm_table_name: str,
+    user_table_name: str,
+    tenant_table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    order_dir = "ASC" if order.upper() == "ASC" else "DESC"
+    sort_col = _sanitize_sort(sort)
+    offset = (page - 1) * per_page
+
+    where = ["d.tenant_id = :tenant_id"]
+    params: Dict[str, Any] = {"tenant_id": tenant_id, "user_id": user_id}
+    if q:
+        where.append("(d.title LIKE :q OR d.content LIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = "WHERE " + " AND ".join(where)
+
+    count_sql = text(
+        f"""
+        SELECT COUNT(DISTINCT d.id) AS cnt
+        FROM `{table_name}` d
+        INNER JOIN `{perm_table_name}` udp ON d.id = udp.doc_id
+        {where_sql} AND udp.user_id = :user_id AND udp.perm IN ('admin','read')
+        """
+    )
+
+    list_sql = text(
+        f"""
+        SELECT DISTINCT 
+            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            t.name AS tenant_name,
+            u.full_name AS uploaded_by_user_name,
+            u.username AS uploaded_by_user_username,
+            u.avatar AS uploaded_by_user_avatar,
+            u.email AS uploaded_by_user_email
+        FROM `{table_name}` d
+        INNER JOIN `{perm_table_name}` udp ON d.id = udp.doc_id
+        LEFT JOIN `{tenant_table_name}` t ON d.tenant_id = t.id
+        LEFT JOIN `{user_table_name}` u ON u.id = d.uploaded_by_user_id
+        {where_sql} AND udp.user_id = :user_id AND udp.perm IN ('admin','read')
+        ORDER BY d.{sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)

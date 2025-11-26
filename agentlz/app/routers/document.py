@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import Response
 from agentlz.core.logger import setup_logging
-from agentlz.schemas.document import DocumentUpdate
+from agentlz.schemas.document import DocumentUpdate, DocumentUpload
 from agentlz.schemas.responses import Result
 from agentlz.services import document_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
@@ -82,8 +82,7 @@ def list_documents(
 @router.post("/rag", response_model=Result)
 def create_document(
     request: Request,
-    payload: Dict[str, Any],
-    type: str = Query("self", regex="^(system|self|tenant)$", description="文档类型"),
+    payload: DocumentUpload,
     claims: Dict[str, Any] = Depends(require_auth)
 ):
     """创建新文档（需要管理员权限）
@@ -96,12 +95,25 @@ def create_document(
         tags: 标签（可选）
         description: 描述（可选）
         meta_https: 元数据链接（可选）
-    - type: 文档类型（system, self, tenant）
+        type: 文档类型（system, self, tenant）
     
+    DocumentUpload:
+
+    class DocumentUpload(BaseModel):
+    document: bytes
+    document_type: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    meta_https: Optional[str] = None
+    tags: Optional[list[str]] = None
+    type: str = "self"  # 默认值为 "self"
     """
+    # 验证 type 字段
+    if payload.type not in ["system", "self", "tenant"]:
+        raise HTTPException(status_code=400, detail="type 字段必须是 system、self 或 tenant")
+    
     tenant_id = require_tenant_id(request)
     row = document_service.create_document_service(
-        type=type,
         payload=payload,
         tenant_id=tenant_id,
         claims=claims

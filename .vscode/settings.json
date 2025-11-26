@@ -29,6 +29,12 @@
     ],
     "cSpell.words": [
         "agentlz",
-        "embedder"
+        "chatopenai",
+        "embedder",
+        "keepalive",
+        "pgvector",
+        "qcloud",
+        "rabbitmq",
+        "VHOST"
     ]
 }
