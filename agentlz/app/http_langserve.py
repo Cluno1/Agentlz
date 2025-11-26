@@ -1,16 +1,44 @@
 from __future__ import annotations
 from typing import Dict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from agentlz.config.settings import get_settings
 from agentlz.app.routers.users import router as users_router
 from agentlz.app.routers.auth import router as auth_router
+from agentlz.app.routers.document import router as document_router
 from agentlz.app.deps.auth_deps import require_auth
 from agentlz.schemas.responses import Result
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from agentlz.core.external_services import close_all_connections, get_rabbitmq_connection
+import logging
 
-app = FastAPI()
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时测试RabbitMQ连接
+    try:
+        connection = get_rabbitmq_connection()
+        if connection and not connection.is_closed:
+            logger.info("RabbitMQ连接测试成功")
+        else:
+            logger.warning("RabbitMQ连接测试失败，将在实际使用时尝试重连")
+    except Exception as e:
+        logger.warning(f"RabbitMQ连接测试失败: {e}，将在实际使用时尝试重连")
+    
+    yield
+    
+    # 关闭时清理所有外部服务连接
+    try:
+        close_all_connections()
+        logger.info("所有外部服务连接已关闭")
+    except Exception as e:
+        logger.error(f"关闭外部服务连接时出错: {e}")
+
+app = FastAPI(lifespan=lifespan)
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
@@ -21,6 +49,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(users_router, dependencies=[Depends(require_auth)])
+app.include_router(document_router, dependencies=[Depends(require_auth)])
 
 @app.exception_handler(HTTPException)
 async def _http_exc_handler(request: Request, exc: HTTPException):
@@ -50,3 +79,25 @@ async def _general_exc_handler(request: Request, exc: Exception):
 @app.get("/v1/health", response_model=Result)
 def health() -> Dict[str, str]:
     return Result.ok({"status": "ok"})
+
+@app.get("/v1/health/rabbitmq", response_model=Result)
+def health_rabbitmq() -> Dict[str, Any]:
+    """RabbitMQ健康检查端点"""
+    try:
+        from agentlz.core.external_services import test_rabbitmq_connection
+        result = test_rabbitmq_connection()
+        if result["connection_status"] and result["channel_status"]:
+            return Result.ok(result)
+        else:
+            return Result.error(
+                message=f"RabbitMQ连接异常: {result['message']}", 
+                code=503, 
+                data=result
+            )
+    except Exception as e:
+        logger.error(f"RabbitMQ健康检查失败: {e}")
+        return Result.error(
+            message=f"RabbitMQ健康检查失败: {str(e)}", 
+            code=500, 
+            data={}
+        )
