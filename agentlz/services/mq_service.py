@@ -3,7 +3,7 @@ import json
 import threading
 import time
 from agentlz.config.settings import get_settings
-from agentlz.core.external_services import get_rabbitmq_channel, get_rabbitmq_connection
+from agentlz.core.external_services import create_rabbitmq_connection
 from agentlz.core.logger import setup_logging
 import pika
 
@@ -53,38 +53,42 @@ class MQService:
         """消费消息的线程函数"""
         while self._running:
             try:
-                # 获取连接和通道
-                self._connection = get_rabbitmq_connection()
-                self._channel = get_rabbitmq_channel()
-                
-                # 声明队列
+                # 线程内创建独立的连接与通道（pika不支持跨线程共享连接/通道）
+                # 使用 external_services 的工厂创建独立连接
+                self._connection = create_rabbitmq_connection()
+                self._channel = self._connection.channel()
+
+                # 声明队列并设置流控
                 self._channel.queue_declare(queue='doc_parse_tasks', durable=True)
-                
+                self._channel.basic_qos(prefetch_count=1)
+
                 logger.info("开始监听文档解析任务队列...")
-                
+
                 # 设置消费者
                 self._channel.basic_consume(
                     queue='doc_parse_tasks',
                     on_message_callback=self._process_message,
-                    auto_ack=False  # 手动确认，确保消息被正确处理
+                    auto_ack=False
                 )
-                
+
                 # 开始消费
                 self._channel.start_consuming()
-                
+
             except Exception as e:
                 logger.error(f"MQ消费线程出错: {e}")
                 if self._running:
-                    # 如果服务仍在运行，等待后重试
                     time.sleep(5)
                     logger.info("尝试重新连接RabbitMQ...")
                 else:
                     break
-                    
+
         # 清理连接
         try:
             if self._channel and not self._channel.is_closed:
-                self._channel.stop_consuming()
+                try:
+                    self._channel.stop_consuming()
+                except Exception:
+                    pass
                 self._channel.close()
             if self._connection and not self._connection.is_closed:
                 self._connection.close()

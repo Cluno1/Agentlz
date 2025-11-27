@@ -91,6 +91,35 @@ def get_rabbitmq_channel():
     return _RABBITMQ_CHANNEL
 
 
+def build_rabbitmq_params() -> pika.ConnectionParameters | pika.URLParameters:
+    """根据配置构建RabbitMQ连接参数（不创建全局连接）。"""
+    s = get_settings()
+    url = getattr(s, "rabbitmq_url", None)
+    if url:
+        return pika.URLParameters(url)
+    host = getattr(s, "rabbitmq_host", "127.0.0.1")
+    port = getattr(s, "rabbitmq_port", 5672)
+    user = getattr(s, "rabbitmq_user", "guest")
+    password = getattr(s, "rabbitmq_password", "guest")
+    vhost = getattr(s, "rabbitmq_vhost", "/")
+    return pika.ConnectionParameters(
+        host=host,
+        port=port,
+        virtual_host=vhost,
+        credentials=pika.PlainCredentials(user, password),
+        heartbeat=600,
+        blocked_connection_timeout=300,
+    )
+
+
+def create_rabbitmq_connection() -> pika.BlockingConnection:
+    """创建新的RabbitMQ连接实例（用于线程/独立消费者）。"""
+    params = build_rabbitmq_params()
+    conn = pika.BlockingConnection(params)
+    logger.info("RabbitMQ独立连接创建成功")
+    return conn
+
+
 def get_redis_client():
     """获取Redis客户端实例（单例模式）"""
     global _REDIS_CLIENT
