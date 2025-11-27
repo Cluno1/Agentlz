@@ -119,11 +119,11 @@ def create_document(
     now = datetime.now(timezone.utc)
     
     # 构建动态SQL，支持可选字段
-    columns = ["id", "tenant_id", "uploaded_by_user_id", "status", "upload_time", "title", "content"]
-    values = [":id", ":tenant_id", ":uploaded_by_user_id", ":status", ":upload_time", ":title", ":content"]
+    columns = ["id", "tenant_id", "uploaded_by_user_id", "status", "upload_time", "title", "content","save_https"]
+    values = [":id", ":tenant_id", ":uploaded_by_user_id", ":status", ":upload_time", ":title", ":content",":save_https"]
     
     # 添加可选字段
-    if payload.get("type") is not None:
+    if payload.get("document_type") is not None:
         columns.append("type")
         values.append(":type")
     
@@ -155,11 +155,12 @@ def create_document(
         "upload_time": now,
         "title": payload.get("title"),
         "content": payload.get("content"),
+        "save_https": payload.get("save_https"),
     }
     
     # 添加可选参数
     if "type" in columns:
-        params["type"] = payload.get("type")
+        params["type"] = payload.get("document_type")
     if "tags" in columns:
         # 将标签列表转换为逗号分隔的字符串
         tags = payload.get("tags", [])
@@ -193,7 +194,21 @@ def update_document(
     table_name: str,
 ) -> Optional[Dict[str, Any]]:
     # 更新文档信息（不可修改 tenant_id 与主键 id）
-    """更新文档，如果不存在返回 None"""
+    """
+    更新文档，如果不存在返回 None
+    
+    参数：
+    - `doc_id`: 文档ID
+    - `payload`: 包含更新字段的字典
+    - `tenant_id`: 租户ID
+    - `table_name`: 文档表名
+    
+    返回：
+    - 更新后的文档记录（字典格式），若文档不存在则返回 None
+    
+    异常：
+    - `ValueError`: 若尝试更新 `tenant_id` 或 `id` 字段
+    """
 
     allowed_cols = [
         "uploaded_by_user_id",
@@ -335,7 +350,7 @@ def list_documents_with_names(
     list_sql = text(
         f"""
         SELECT 
-            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            d.id, d.disabled, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
             t.name AS tenant_name,
             u.full_name AS uploaded_by_user_name,
             u.username AS uploaded_by_user_username,
@@ -400,7 +415,7 @@ def list_self_documents_with_names(
     list_sql = text(
         f"""
         SELECT 
-            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            d.id,d.disabled, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.type, d.tags, d.description, d.meta_https, d.save_https,
             t.name AS tenant_name,
             u.full_name AS uploaded_by_user_name,
             u.username AS uploaded_by_user_username,

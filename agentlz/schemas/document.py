@@ -22,9 +22,9 @@ class DocumentUpdate(BaseModel):
 # 文档上传参数
 class DocumentUpload(BaseModel):
     document: bytes
-    document_type: str
+    document_type: str # 文档类型,如 md,pdf等
     title: Optional[str] = None
     description: Optional[str] = None
     meta_https: Optional[str] = None
     tags: Optional[list[str]] = None
-    type: str = "self"
+    type: str = "self" # 上传的文档的租户形式，self表示该文档的tenant_id == ‘default’,tenant表示该文档的tenant_id == user.tenant_id,system表示该文档的tenant_id == ’system‘

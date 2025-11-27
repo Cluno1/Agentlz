@@ -20,9 +20,9 @@ def get_cos_client():
         try:
             from qcloud_cos import CosConfig, CosS3Client  # type: ignore
             s = get_settings()
-            secret_id = s.getenv("cos_secret_id")
-            secret_key = s.getenv("cos_secret_key")
-            region = s.getenv("cos_region")
+            secret_id = s.cos_secret_id
+            secret_key = s.cos_secret_key
+            region = s.cos_region
 
             if not secret_id or not secret_key or not region:
                 raise RuntimeError(
@@ -133,7 +133,13 @@ def get_redis_client():
 
 
 def publish_to_rabbitmq(queue_name: str, message: Dict[str, Any], durable: bool = True) -> None:
-    """发布消息到RabbitMQ队列"""
+    """
+    发布消息到RabbitMQ队列
+    
+    :param queue_name: 队列名称
+    :param message: 要发布的消息字典
+    :param durable: 是否持久化消息（默认True）
+    """
     try:
         channel = get_rabbitmq_channel()
 
@@ -156,8 +162,19 @@ def publish_to_rabbitmq(queue_name: str, message: Dict[str, Any], durable: bool 
         raise RuntimeError(f"消息发布到RabbitMQ失败: {e}") from e
 
 
-def upload_to_cos(document: bytes, filename: str, bucket: Optional[str] = None) -> str:
-    """上传文档到COS"""
+def upload_to_cos(document: bytes, filename: str, path: str = "unknown/", bucket: Optional[str] = None) -> str:
+    """
+    上传文档到COS,返回独有标志的url
+    
+    参数：
+    - `document`: 文档内容（字节流）
+    - `filename`: 文档文件名
+    - `bucket`: COS存储桶名称（可选，默认从配置中获取）
+    - `path`: COS存储路径（可选，默认"unknown/"）
+    
+    返回：
+    - 上传后的COS对象键（唯一标识符）
+    """
     try:
         import uuid
         client = get_cos_client()
@@ -165,27 +182,47 @@ def upload_to_cos(document: bytes, filename: str, bucket: Optional[str] = None) 
 
         # 获取存储桶名称
         if bucket is None:
-            bucket = s.getenv("cos_bucket")
+            bucket = s.cos_bucket
             if not bucket:
                 raise RuntimeError("COS存储桶配置缺失")
 
         # 生成对象键
-        key = f"documents/{uuid.uuid4().hex[:16]}_{filename}"
+        key = f"{path.rstrip('/')}/{uuid.uuid4().hex[:16]}_{filename}"
 
         # 上传文档
         client.put_object(Bucket=bucket, Body=document, Key=key)
 
-        # 返回访问URL
-        base_url = s.getenv("cos_base_url")
-        region = s.getenv("cos_region")
+        logger.info(f"文档 {filename} 上传到COS成功, 键: {key}")
 
-        if base_url:
-            return f"{base_url.rstrip('/')}/{key}"
-        return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
+        
+        return key
 
     except Exception as e:
         logger.error(f"COS文档上传失败: {e}")
         raise RuntimeError(f"COS文档上传失败: {e}") from e
+
+
+def test_rabbitmq_connection() -> Dict[str, Any]:
+    """测试RabbitMQ连接状态"""
+    try:
+        connection = get_rabbitmq_connection()
+        channel = get_rabbitmq_channel()
+        
+        connection_status = connection is not None and not connection.is_closed
+        channel_status = channel is not None and not channel.is_closed
+        
+        return {
+            "connection_status": connection_status,
+            "channel_status": channel_status,
+            "message": "RabbitMQ连接正常" if connection_status and channel_status else "RabbitMQ连接异常"
+        }
+    except Exception as e:
+        logger.error(f"RabbitMQ连接测试失败: {e}")
+        return {
+            "connection_status": False,
+            "channel_status": False,
+            "message": f"RabbitMQ连接测试失败: {str(e)}"
+        }
 
 
 def close_all_connections() -> None:
