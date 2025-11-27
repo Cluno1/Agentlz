@@ -11,7 +11,8 @@ from agentlz.app.deps.auth_deps import require_auth
 from agentlz.schemas.responses import Result
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from agentlz.core.external_services import close_all_connections, get_rabbitmq_connection
+from agentlz.core.external_services import close_all_connections
+from agentlz.services.mq_service import start_mq_service, stop_mq_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,22 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时测试RabbitMQ连接
+    # 启动MQ服务作为守护线程
     try:
-        connection = get_rabbitmq_connection()
-        if connection and not connection.is_closed:
-            logger.info("RabbitMQ连接测试成功")
-        else:
-            logger.warning("RabbitMQ连接测试失败，将在实际使用时尝试重连")
+        start_mq_service()
+        logger.info("MQ服务已启动为守护线程")
     except Exception as e:
-        logger.warning(f"RabbitMQ连接测试失败: {e}，将在实际使用时尝试重连")
+        logger.error(f"启动MQ服务失败: {e}")
+        # 不阻止应用启动，只是记录错误
     
     yield
+    
+    # 关闭时停止MQ服务
+    try:
+        stop_mq_service()
+        logger.info("MQ服务已停止")
+    except Exception as e:
+        logger.error(f"停止MQ服务时出错: {e}")
     
     # 关闭时清理所有外部服务连接
     try:

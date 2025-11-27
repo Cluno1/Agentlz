@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 from fastapi import HTTPException
-
+import re
 from agentlz.config.settings import get_settings
 from agentlz.core.logger import setup_logging
 from agentlz.repositories import document_repository as repo
@@ -9,8 +9,11 @@ from agentlz.repositories import user_repository as user_repo
 from agentlz.repositories import user_doc_perm_repository as perm_repo
 from agentlz.schemas.document import DocumentUpload
 
+from agentlz.services.chunk_embeddings_service import create_chunk_embedding_service, split_markdown_into_chunks
 from agentlz.services.cos_service import upload_document_to_cos
 from agentlz.core.external_services import publish_to_rabbitmq
+from markitdown import MarkItDown
+from agentlz.services.cos_service import get_origin_url_from_save_https
 
 logger = setup_logging()
 
@@ -27,6 +30,53 @@ logger = setup_logging()
 - 更新操作不允许修改主键 `id` 与隔离字段 `tenant_id`，允许字段以仓储层白名单为准。
 - 表名默认 `document`，租户请求头默认 `X-Tenant-ID`，可通过配置覆盖。
 """
+
+
+suffix_map = {
+    "pdf": ".pdf", "doc": ".doc", "docx": ".docx", "md": ".md", "txt": ".txt",
+    "ppt": ".ppt", "pptx": ".pptx", "xls": ".xls", "xlsx": ".xlsx", "csv": ".csv",
+}
+
+
+def clean_filename(data: dict, max_len: int = 200) -> str:
+    """清理文档标题，生成安全的文件名
+
+    1. 清理非法字符（保留空格、中划线、下划线）
+    2. 去掉与文档类型不同的后缀（例如 .docx 保留 .docx）
+    3. 限制总长度（默认200字符）
+
+    :param data: 包含标题和文档类型的字典
+    :param max_len: 最大文件名长度（默认200）
+    :return: 清理后的安全文件名
+    """
+
+    raw_title = data.get("title", "").strip()
+    doc_type = data.get("document_type", "").lower()
+
+    try:
+        ext = suffix_map.get(doc_type, "")          # 本次要拼的后缀
+    except KeyError:
+        raise HTTPException(
+            status_code=400, detail=f"不支持的文档类型: {doc_type}")
+
+    # 1. 清理非法字符
+    safe_name = re.sub(r'[<>:\"/\\|?*\x00-\x1f]', '_', raw_title)
+    safe_name = safe_name.strip('. ')
+    safe_name = re.sub(r'\s+', ' ', safe_name)
+
+    # 2. 去掉自带后缀
+    for suffix in sorted(suffix_map.values(), key=len, reverse=True):
+        if safe_name.lower().endswith(suffix.lower()):
+
+            safe_name = safe_name[:-len(suffix)]
+
+    # 3. 长度截断
+    if max_len > 0:
+        safe_name = safe_name[:max_len].rstrip()
+
+    # 4. 拼回后缀
+    return f"{safe_name}{ext}"
+
 
 def _list_self_documents(
     *,
@@ -98,124 +148,125 @@ def _get_table_and_header() -> Tuple[str, str]:
     tenant_header = getattr(s, "tenant_id_header", "X-Tenant-ID")
     return table_name, tenant_header
 
+
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
     if not isinstance(claims, dict):
         raise HTTPException(status_code=401, detail="缺少或非法的 Authorization 头")
 
 # 检查文档访问权限
+
+
 def _check_document_access_permission(
-    *, 
-    document: Dict[str, Any], 
-    current_user_id: int, 
+    *,
+    document: Dict[str, Any],
+    current_user_id: int,
     tenant_id: str
 ) -> bool:
     """检查用户是否有权限查看文档。
-    
+
     权限检查逻辑（按优先级）：
     1. 如果文档的 `tenant_id` 是 'system'，则可以查看
     2. 如果用户是文档的上传者，则可以查看
     3. 如果用户在 user_doc_permission 表中有 admin 或 read 权限，则可以查看
     4. 如果用户是租户管理员且与文档在同一租户，则可以查看
     5. 其他情况不允许查看
-    
+
     参数：
     - `document`: 文档记录
     - `current_user_id`: 当前用户ID
     - `tenant_id`: 租户标识
     - `claims`: 用户认证信息
-    
+
     返回：
     - `True` 有权限查看，`False` 无权限查看
     """
     if not document:
         return False
-    
+
     # 1. 如果文档是 'system'，则可以查看
     if document.get("tenant_id") == "system":
         return True
-    
+
     # 2. 检查是否是文档上传者
     uploaded_by_user_id = document.get("uploaded_by_user_id")
     if uploaded_by_user_id and uploaded_by_user_id == current_user_id:
         return True
-    
+
     # 3. 检查 user_doc_permission 表中的权限
     perm_record = perm_repo.get_perm_by_user_doc(
-        user_id=current_user_id, 
-        doc_id=document.get("id"), 
+        user_id=current_user_id,
+        doc_id=document.get("id"),
         table_name="user_doc_permission"
     )
     if perm_record:
         perm = perm_record.get("perm")
         if perm in ["admin", "read"]:
             return True
-    
+
     # 4. 检查用户是否是租户管理员且在同一租户
     user_info = user_repo.get_user_by_id(
-        user_id=current_user_id, 
-        tenant_id=tenant_id, 
+        user_id=current_user_id,
+        tenant_id=tenant_id,
         table_name="users"
     )
     if user_info and user_info.get("role") == "admin" and user_info.get("tenant_id") == tenant_id:
         return True
-    
-    
+
     return False
 
 
 # 检查文档更新或删除权限
 def _check_document_update_delete_permission(
-    *, 
-    document: Dict[str, Any], 
-    current_user_id: int, 
+    *,
+    document: Dict[str, Any],
+    current_user_id: int,
     tenant_id: str
 ) -> bool:
     """检查用户是否有权限更新或删除文档。
-    
+
     权限检查逻辑（按优先级）：
     1. 如果用户是文档的上传者，则可以更新或删除
     2. 如果用户在 user_doc_permission 表中有 admin 或 write 权限，则可以更新或删除
     3. 如果用户是租户管理员且与文档在同一租户，则可以更新或删除
     4. 其他情况不允许更新或删除
-    
+
     参数：
     - `document`: 文档记录
     - `current_user_id`: 当前用户ID
     - `tenant_id`: 租户标识
-    
+
     返回：
     - `True` 有权限更新或删除，`False` 无权限更新或删除
     """
     if not document:
         return False
-    
+
     # 1. 检查是否是文档上传者
     uploaded_by_user_id = document.get("uploaded_by_user_id")
     if uploaded_by_user_id and uploaded_by_user_id == current_user_id:
         return True
-    
+
     # 2. 检查 user_doc_permission 表中的权限（需要 admin 或 write 权限）
     perm_record = perm_repo.get_perm_by_user_doc(
-        user_id=current_user_id, 
-        doc_id=document.get("id"), 
+        user_id=current_user_id,
+        doc_id=document.get("id"),
         table_name="user_doc_permission"
     )
     if perm_record:
         perm = perm_record.get("perm")
         if perm in ["admin", "write"]:
             return True
-    
+
     # 3. 检查用户是否是租户管理员且在同一租户
     user_info = user_repo.get_user_by_id(
-        user_id=current_user_id, 
-        tenant_id=tenant_id, 
+        user_id=current_user_id,
+        tenant_id=tenant_id,
         table_name="users"
     )
     if user_info and user_info.get("role") == "admin" and user_info.get("tenant_id") == tenant_id:
         return True
-    
-    return False
 
+    return False
 
 
 def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -230,7 +281,7 @@ def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[s
     """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
-    
+
     # 首先获取文档
     s = get_settings()
     user_table_name = getattr(s, "user_table_name", "users")
@@ -244,7 +295,7 @@ def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[s
     )
     if not row:
         return None
-    
+
     # 获取当前用户ID（从claims中获取）
     current_user_id = None
     if claims and "sub" in claims:
@@ -253,11 +304,11 @@ def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[s
             current_user_id = int(claims["sub"])
         except (ValueError, TypeError):
             current_user_id = None
-    
+
     # 如果没有用户ID，无法验证权限
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-    
+
     # 检查权限
     if not _check_document_access_permission(
         document=row,
@@ -265,7 +316,7 @@ def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[s
         tenant_id=tenant_id
     ):
         raise HTTPException(status_code=403, detail="没有权限查看此文档")
-    
+
     if row.get("upload_time") is not None:
         row["upload_time"] = str(row["upload_time"])
     return row
@@ -294,16 +345,17 @@ def update_document_service(*, doc_id: str, payload: Dict[str, Any], tenant_id: 
             current_user_id = int(claims["sub"])
         except (ValueError, TypeError):
             current_user_id = None
-    
+
     # 如果没有用户ID，无法验证权限
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-    
+
     # 首先获取文档
-    row = repo.get_document_by_id(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
+    row = repo.get_document_by_id(
+        doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
         return None
-    
+
     # 检查权限
     if not _check_document_update_delete_permission(
         document=row,
@@ -311,9 +363,9 @@ def update_document_service(*, doc_id: str, payload: Dict[str, Any], tenant_id: 
         tenant_id=tenant_id
     ):
         raise HTTPException(status_code=403, detail="没有权限更新此文档")
-        
-    
-    row = repo.update_document(doc_id=doc_id, payload=payload, tenant_id=tenant_id, table_name=table_name)
+
+    row = repo.update_document(
+        doc_id=doc_id, payload=payload, tenant_id=tenant_id, table_name=table_name)
     if row and row.get("upload_time") is not None:
         row["upload_time"] = str(row["upload_time"])
     return row
@@ -339,18 +391,19 @@ def delete_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dic
             current_user_id = int(claims["sub"])
         except (ValueError, TypeError):
             current_user_id = None
-    
+
     # 如果没有用户ID，无法验证权限
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-    
+
     table_name, _ = _get_table_and_header()
-    
+
     # 首先获取文档
-    row = repo.get_document_by_id(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
+    row = repo.get_document_by_id(
+        doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
         return False
-    
+
     # 检查权限
     if not _check_document_update_delete_permission(
         document=row,
@@ -376,7 +429,8 @@ def get_download_payload_service(*, doc_id: str, tenant_id: str, claims: Optiona
     """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
-    row = repo.get_document_by_id(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
+    row = repo.get_document_by_id(
+        doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
         return None
     current_user_id = None
@@ -393,8 +447,9 @@ def get_download_payload_service(*, doc_id: str, tenant_id: str, claims: Optiona
     content = str(row.get("content") or "")
     return content, f"{title}.txt"
 
+
 def list_documents_service(
-    *, page: int, per_page: int, sort: str, order: str, q: Optional[str],type: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None
+    *, page: int, per_page: int, sort: str, order: str, q: Optional[str], type: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None
 ) -> Tuple[list[Dict[str, Any]], int]:
     """分页查询文档列表（按租户隔离，支持模糊搜索与排序）。
 
@@ -413,7 +468,7 @@ def list_documents_service(
     """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
-    
+
     # 获取当前用户ID（从claims中获取）
     current_user_id = None
     if claims and "sub" in claims:
@@ -421,11 +476,11 @@ def list_documents_service(
             current_user_id = int(claims["sub"])
         except (ValueError, TypeError):
             current_user_id = None
-    
+
     # 如果没有用户ID，无法验证权限
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-    
+
     # 根据type参数处理不同的文档查询逻辑
     if type == "system":
         s = get_settings()
@@ -464,10 +519,10 @@ def list_documents_service(
         )
         if not user_info:
             raise HTTPException(status_code=404, detail="用户不存在")
-        
+
         user_tenant_id = user_info.get("tenant_id", "default")
         user_role = user_info.get("role", "user")
-        
+
         if user_role == "admin":
             # 如果用户是admin则可以查看全部tenant文档
             s = get_settings()
@@ -497,8 +552,9 @@ def list_documents_service(
                 table_name=table_name,
             )
     else:
-        raise HTTPException(status_code=400, detail="type 必须是 'system', 'self' 或 'tenant'")
-    
+        raise HTTPException(
+            status_code=400, detail="type 必须是 'system', 'self' 或 'tenant'")
+
     for r in rows:
         if r.get("upload_time") is not None:
             r["upload_time"] = str(r["upload_time"])
@@ -506,9 +562,9 @@ def list_documents_service(
 
 
 def create_document_service(
-    *, 
-    payload: DocumentUpload, 
-    tenant_id: str, 
+    *,
+    payload: DocumentUpload,
+    tenant_id: str,
     claims: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """创建文档并返回插入后的记录，支持多种文档类型。
@@ -530,13 +586,13 @@ def create_document_service(
       - `meta_https`: 元数据链接（可选）
       - `type`: 文档类型（system, self, tenant）
     - `tenant_id`: 租户标识。
-    
+
     返回：
     - 新建的记录字典；其中 `upload_time` 字段会被统一转换为字符串。
     """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
-    
+
     # 获取当前用户ID（从claims中获取）
     current_user_id = None
     if claims and "sub" in claims:
@@ -544,10 +600,23 @@ def create_document_service(
             current_user_id = int(claims["sub"])
         except (ValueError, TypeError):
             current_user_id = None
-    
+
     # 如果没有用户ID，无法创建文档
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
+
+    # 根据type确定tenant_id
+    if payload.type == "self":
+        doc_tenant_id = "default"
+        path = "document/default"
+    elif payload.type == "system":
+        doc_tenant_id = "system"
+        path = "document/system"
+    elif payload.type == "tenant":
+        doc_tenant_id = tenant_id
+        path = f"document/{tenant_id}"
+    else:
+        doc_tenant_id = "default"
 
     data = {
         "document": payload.document,
@@ -556,66 +625,142 @@ def create_document_service(
         "tags": payload.tags or [],
         "description": payload.description or "",
         "meta_https": payload.meta_https or "",
-        "type": payload.type or "self",
-        "tenant_id": tenant_id,
+        "type": payload.type or "unknown",
+        "tenant_id": doc_tenant_id,
         "current_user_id": current_user_id,
     }
-    
-    # 验证文档类型
-    supported_types = ["pdf", "doc", "docx", "md", "txt", "ppt", "pptx", "xls", "xlsx", "csv"]
-    if data.get("document_type") not in supported_types:
-        raise HTTPException(status_code=400, detail=f"不支持的文档类型。支持类型：{', '.join(supported_types)}")
-    
-    suffix_map = {
-        "pdf": ".pdf",
-        "doc": ".doc",
-        "docx": ".docx",
-        "md": ".md",
-        "txt": ".txt",
-        "ppt": ".ppt",
-        "pptx": ".pptx",
-        "xls": ".xls",
-        "xlsx": ".xlsx",
-        "csv": ".csv",
-    }
-    
-    filename = f"{data.get('title')}{suffix_map.get(data.get('document_type'), '')}"
-    
+
+    data['title'] = clean_filename(data)
+    logger.info(f"最终的文档名称,title: {data.get('title')}")
+
     # 上传文档到COS并获取URL
-    save_https = upload_document_to_cos(data.get("document"), filename)
-    data["meta_https"] = save_https
+    save_https = upload_document_to_cos(
+        data.get("document"), data.get("title"), path)
+    data["save_https"] = save_https
+    data["status"] = "processing"
     data["content"] = ""
 
-    
-    logger.info(f"创建文档 文件,已经获取cos url: {data}")
+    logger.info(f"创建文档 文件,已经获取cos url: {save_https}")
 
-    
     # uploaded_by_user_id 统一使用当前用户ID
     data["uploaded_by_user_id"] = current_user_id
 
-    row = repo.create_document(payload=data, tenant_id=tenant_id, table_name=table_name)
+    row = repo.create_document(
+        payload=data, tenant_id=doc_tenant_id, table_name=table_name)
     if row and row.get("upload_time") is not None:
         row["upload_time"] = str(row["upload_time"])
-    
+    logger.info(f"创建文档 文件,已经插入数据库: {row}")
+    try:
+        s = get_settings()
+        perm_table = getattr(
+            s, "user_doc_permission_table_name", "user_doc_permissions")
+        perm_repo.create_user_doc_perm(payload={"user_id": current_user_id, "doc_id": row.get(
+            "id"), "perm": "admin"}, table_name=perm_table)
+    except Exception as e:
+        logger.error(f"创建文档 文件,创建用户文档权限失败: {e}")
     # 发布文档解析任务到 RabbitMQ
     try:
         msg = {
             "doc_id": row.get("id"),
-            "tenant_id": tenant_id,
             "save_https": save_https,
             "document_type": data.get("document_type"),
-            "uploaded_by_user_id": current_user_id,
+            "tenant_id": doc_tenant_id,
         }
+        # rabbitMQ:Send tag 文档解析任务
         publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
         logger.info(f"创建文档 文件,已经发布解析任务: {msg}")
     except Exception as e:
         logger.error(f"创建文档 文件,发布解析任务失败: {e}")
-    try:
-        s = get_settings()
-        perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permissions")
-        perm_repo.create_user_doc_perm(payload={"user_id": current_user_id, "doc_id": row.get("id"), "perm": "admin"}, table_name=perm_table)
-    except Exception as e:
-        logger.error(f"创建文档 文件,创建用户文档权限失败: {e}")
+        # 尝试重新初始化RabbitMQ连接并重试一次
+        try:
+            from agentlz.core.external_services import close_all_connections
+            import time
+            close_all_connections()
+            time.sleep(1)
+            publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
+            logger.info(f"创建文档 文件,重试发布解析任务成功: {msg}")
+        except Exception as retry_e:
+            # 更新文档状态为失败
+            try:
+                repo.update_document(
+                    doc_id=row.get("id"),
+                    payload={"status": "fail"},
+                    tenant_id=doc_tenant_id,
+                    table_name=table_name
+                )
+                logger.info(f"RabbitMQ发布任务失败,已将文档状态更新为失败: {row.get('id')}")
+            except Exception as update_e:
+                logger.error(f"RabbitMQ发布任务失败,更新文档状态也失败: {update_e}")
+            # 可以考虑将任务保存到数据库或发送到死信队列
     return row
-    
 
+
+def process_document_from_cos_https(save_https: str, document_type: str, doc_id: str, tenant_id: str) -> str:
+    """从COS下载文档并转换为Markdown格式,存入数据库document表
+
+    参数：
+    - `save_https`: 文档在COS中的HTTPS链接。
+    - `document_type`: 文档类型，用于确定转换规则。
+    - `doc_id`: 文档ID，用于数据库存储。
+    - `tenant_id`: 租户ID，用于确定数据库表名。
+
+    返回：
+    - 转换后的Markdown文本。
+    """
+
+    try:
+        md = MarkItDown()                # 默认配置
+
+        ori_url = get_origin_url_from_save_https(save_https)
+        logger.info(f"文档 {save_https} 转换为原始URL: {ori_url}")
+
+        # 先验证文件是否可访问
+        import requests
+        response = requests.head(ori_url, timeout=10)
+        if response.status_code != 200:
+            raise Exception(f"文件无法访问，HTTP状态码: {response.status_code}")
+
+        # 获取文件大小信息
+        file_size = int(response.headers.get('Content-Length', 0))
+        if file_size == 0:
+            raise Exception("文件大小为0，可能文件为空或链接无效")
+
+        result = md.convert(ori_url)   # 支持 pathlib / URL / bytes
+        logger.info(
+            f"文档 {doc_id} 转换为Markdown内容，长度: {len(result.text_content)} 字符")
+
+        table_name, _ = _get_table_and_header()
+        # 插入数据库
+        repo.update_document(
+            doc_id=doc_id,
+            payload={"content": result.text_content, "status": "success"},
+            tenant_id=tenant_id,
+            table_name=table_name,
+        )
+
+        # 将markdown大文本切割成小文本块
+        chunks = split_markdown_into_chunks(result.text_content)
+        index = 0
+        for chunk in chunks:
+            index += 1
+            
+            logger.info(f"文档 {doc_id} 切割为Markdown块，长度: {len(chunk)} 字符")
+            
+            # 存入向量数据库
+            create_chunk_embedding_service(
+                tenant_id=tenant_id,
+                chunk_id=f"{doc_id}_{index}",
+                doc_id=doc_id,
+                content=chunk,
+            )
+        return ""
+    except Exception as e:
+        logger.error(f"文档 {doc_id} ,原始URL: {ori_url} 转换为Markdown失败: {e}")
+        table_name, _ = _get_table_and_header()
+        repo.update_document(
+            doc_id=doc_id,
+            payload={"status": "fail"},
+            tenant_id=tenant_id,
+            table_name=table_name,
+        )
+        return ""

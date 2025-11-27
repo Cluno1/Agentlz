@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     rabbitmq_url: str = Field(default=None, env="RABBITMQ_URL")
     rabbitmq_management_url: str = Field(
         default=None, env="RABBITMQ_MANAGEMENT_URL")
+    rabbitmq_max_retries: int = Field(default=3, env="RABBITMQ_MAX_RETRIES")
 
     # cos 对象存储
     cos_bucket: str = Field(default=None, env="COS_BUCKET")

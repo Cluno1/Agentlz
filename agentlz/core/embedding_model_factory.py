@@ -3,6 +3,7 @@ from typing import Optional
 
 from agentlz.config.settings import get_settings
 from agentlz.core.logger import setup_logging
+from agentlz.core.dimension_extended_embeddings import DimensionExtendedEmbeddings
 
 try:
     # LangChain 1.x 推荐从 langchain_community 引入 HuggingFaceEmbeddings
@@ -53,8 +54,18 @@ def get_hf_embeddings(
     encode_kwargs = {"normalize_embeddings": normalize_embeddings}
 
     logger.info(f"加载 Embeddings 模型: {name} (device={device or 'auto'})")
-    return HuggingFaceEmbeddings(
+    
+    # 创建基础嵌入模型
+    base_embeddings = HuggingFaceEmbeddings(
         model_name=name,
         model_kwargs=model_kwargs if model_kwargs else {},
         encode_kwargs=encode_kwargs,
     )
+    
+    # 使用维度扩展包装器，将512维扩展到1536维
+    extended_embeddings = DimensionExtendedEmbeddings(
+        base_embeddings=base_embeddings,
+        target_dimension=1536
+    )
+    
+    return extended_embeddings
