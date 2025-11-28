@@ -29,12 +29,16 @@
     ],
     "cSpell.words": [
         "agentlz",
+        "BAAI",
         "chatopenai",
         "embedder",
+        "ivfflat",
         "keepalive",
+        "markitdown",
         "pgvector",
         "qcloud",
         "rabbitmq",
+        "soffice",
         "VHOST"
     ]
 }

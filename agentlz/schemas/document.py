@@ -14,10 +14,9 @@ class DocumentItem(BaseModel):
 
 #  文档更新参数
 class DocumentUpdate(BaseModel):
-    uploaded_by_user_id: Optional[int] = None
-    status: Optional[str] = None
-    title: Optional[str] = None
-    content: Optional[str] = None
+    tags: Optional[list[str]] = None
+    description: Optional[str] = None
+    disabled: Optional[bool] = None
 
 # 文档上传参数
 class DocumentUpload(BaseModel):
