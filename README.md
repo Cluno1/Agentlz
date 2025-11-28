@@ -5,6 +5,8 @@
 ## 环境搭建
 
 ```bash
+ 系统环境需要: brew install --cask libreoffice #这个安装在系统环境,用于ppt解析成md文档,如果不安装则可能无法解析ppt文件
+
  创建环境：python -m venv .venv
 
  激活环境（Linux/Mac）：source .venv/bin/activate

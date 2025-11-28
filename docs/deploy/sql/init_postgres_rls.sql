@@ -1,12 +1,16 @@
--- Active: 1763648474172@@117.72.162.89@5432@agentlz
+-- Active: 1763972669865@@117.72.162.89@5432@agentlz
 CREATE EXTENSION IF NOT EXISTS vector;
 
+DROP TABLE IF EXISTS chunk_embeddings;
+
 CREATE TABLE IF NOT EXISTS chunk_embeddings (
-    chunk_id VARCHAR(64) PRIMARY KEY,
+    chunk_id VARCHAR(64) PRIMARY KEY, -- 分块ID
+    chunk_index INTEGER DEFAULT 0, -- 分块索引 对于整个文本的第几个分块
     tenant_id VARCHAR(64) NOT NULL,
     doc_id VARCHAR(64) NOT NULL,
     embedding VECTOR(1536) NOT NULL,
     content TEXT,
+    length INTEGER DEFAULT 0, -- 分块长度
     created_at TIMESTAMPTZ DEFAULT now()
 );
 

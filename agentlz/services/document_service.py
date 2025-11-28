@@ -9,7 +9,7 @@ from agentlz.repositories import user_repository as user_repo
 from agentlz.repositories import user_doc_perm_repository as perm_repo
 from agentlz.schemas.document import DocumentUpload
 
-from agentlz.services.chunk_embeddings_service import create_chunk_embedding_service, split_markdown_into_chunks
+from agentlz.services.chunk_embeddings_service import create_chunk_embedding_service, split_markdown_into_chunks, search_similar_chunks_service
 from agentlz.services.cos_service import upload_document_to_cos
 from agentlz.core.external_services import publish_to_rabbitmq
 from markitdown import MarkItDown
@@ -193,10 +193,13 @@ def _check_document_access_permission(
         return True
 
     # 3. 检查 user_doc_permission 表中的权限
+    from agentlz.config.settings import get_settings
+    s = get_settings()
+    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permissions")
     perm_record = perm_repo.get_perm_by_user_doc(
         user_id=current_user_id,
         doc_id=document.get("id"),
-        table_name="user_doc_permission"
+        table_name=perm_table
     )
     if perm_record:
         perm = perm_record.get("perm")
@@ -247,10 +250,13 @@ def _check_document_update_delete_permission(
         return True
 
     # 2. 检查 user_doc_permission 表中的权限（需要 admin 或 write 权限）
+    from agentlz.config.settings import get_settings
+    s = get_settings()
+    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permissions")
     perm_record = perm_repo.get_perm_by_user_doc(
         user_id=current_user_id,
         doc_id=document.get("id"),
-        table_name="user_doc_permission"
+        table_name=perm_table
     )
     if perm_record:
         perm = perm_record.get("perm")
@@ -270,22 +276,22 @@ def _check_document_update_delete_permission(
 
 
 def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """按文档 ID 查询单条记录（按租户隔离）。
-
-    参数：
-    - `doc_id`: 文档主键 ID。
-    - `tenant_id`: 租户标识，用于多租户数据隔离。
-
-    返回：
-    - 文档记录字典或 `None`；其中 `upload_time` 字段会被统一转换为字符串。
-    """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
 
-    # 首先获取文档
     s = get_settings()
     user_table_name = getattr(s, "user_table_name", "users")
     tenant_table_name = "tenant"
+
+    current_user_id = None
+    if claims and "sub" in claims:
+        try:
+            current_user_id = int(claims["sub"])
+        except (ValueError, TypeError):
+            current_user_id = None
+    if current_user_id is None:
+        raise HTTPException(status_code=401, detail="无法获取用户身份信息")
+
     row = repo.get_document_with_names_by_id(
         doc_id=doc_id,
         tenant_id=tenant_id,
@@ -293,23 +299,19 @@ def get_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[s
         user_table_name=user_table_name,
         tenant_table_name=tenant_table_name,
     )
+
     if not row:
-        return None
+        any_row = repo.get_document_with_names_by_id_any_tenant(
+            doc_id=doc_id,
+            table_name=table_name,
+            user_table_name=user_table_name,
+            tenant_table_name=tenant_table_name,
+        )
+        if any_row and any_row.get("uploaded_by_user_id") == current_user_id:
+            row = any_row
+        else:
+            return None
 
-    # 获取当前用户ID（从claims中获取）
-    current_user_id = None
-    if claims and "sub" in claims:
-        # 假设 claims 中的 sub 字段包含用户ID
-        try:
-            current_user_id = int(claims["sub"])
-        except (ValueError, TypeError):
-            current_user_id = None
-
-    # 如果没有用户ID，无法验证权限
-    if current_user_id is None:
-        raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-
-    # 检查权限
     if not _check_document_access_permission(
         document=row,
         current_user_id=current_user_id,
@@ -350,11 +352,23 @@ def update_document_service(*, doc_id: str, payload: Dict[str, Any], tenant_id: 
     if current_user_id is None:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
 
-    # 首先获取文档
     row = repo.get_document_by_id(
         doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
-        return None
+        s = get_settings()
+        user_table_name = getattr(s, "user_table_name", "users")
+        tenant_table_name = "tenant"
+        any_row = repo.get_document_with_names_by_id_any_tenant(
+            doc_id=doc_id,
+            table_name=table_name,
+            user_table_name=user_table_name,
+            tenant_table_name=tenant_table_name,
+        )
+        if any_row and any_row.get("uploaded_by_user_id") == current_user_id:
+            row = any_row
+            tenant_id = str(row.get("tenant_id") or tenant_id)
+        else:
+            return None
 
     # 检查权限
     if not _check_document_update_delete_permission(
@@ -365,7 +379,7 @@ def update_document_service(*, doc_id: str, payload: Dict[str, Any], tenant_id: 
         raise HTTPException(status_code=403, detail="没有权限更新此文档")
 
     row = repo.update_document(
-        doc_id=doc_id, payload=payload, tenant_id=tenant_id, table_name=table_name)
+        doc_id=doc_id, payload=payload, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=table_name)
     if row and row.get("upload_time") is not None:
         row["upload_time"] = str(row["upload_time"])
     return row
@@ -398,11 +412,23 @@ def delete_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dic
 
     table_name, _ = _get_table_and_header()
 
-    # 首先获取文档
     row = repo.get_document_by_id(
         doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
-        return False
+        s = get_settings()
+        user_table_name = getattr(s, "user_table_name", "users")
+        tenant_table_name = "tenant"
+        any_row = repo.get_document_with_names_by_id_any_tenant(
+            doc_id=doc_id,
+            table_name=table_name,
+            user_table_name=user_table_name,
+            tenant_table_name=tenant_table_name,
+        )
+        if any_row and any_row.get("uploaded_by_user_id") == current_user_id:
+            row = any_row
+            tenant_id = str(row.get("tenant_id") or tenant_id)
+        else:
+            return False
 
     # 检查权限
     if not _check_document_update_delete_permission(
@@ -412,7 +438,7 @@ def delete_document_service(*, doc_id: str, tenant_id: str, claims: Optional[Dic
     ):
         raise HTTPException(status_code=403, detail="没有权限删除此文档")
 
-    return repo.delete_document(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
+    return repo.delete_document(doc_id=doc_id, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=table_name)
 
 
 def get_download_payload_service(*, doc_id: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, str]]:
@@ -432,7 +458,26 @@ def get_download_payload_service(*, doc_id: str, tenant_id: str, claims: Optiona
     row = repo.get_document_by_id(
         doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
     if not row:
-        return None
+        s = get_settings()
+        user_table_name = getattr(s, "user_table_name", "users")
+        tenant_table_name = "tenant"
+        any_row = repo.get_document_with_names_by_id_any_tenant(
+            doc_id=doc_id,
+            table_name=table_name,
+            user_table_name=user_table_name,
+            tenant_table_name=tenant_table_name,
+        )
+        # 仅当当前用户是上传者时允许跨租户下载
+        current_user_id_tmp = None
+        if claims and "sub" in claims:
+            try:
+                current_user_id_tmp = int(claims["sub"])
+            except (ValueError, TypeError):
+                current_user_id_tmp = None
+        if any_row and current_user_id_tmp is not None and any_row.get("uploaded_by_user_id") == current_user_id_tmp:
+            row = any_row
+        else:
+            return None
     current_user_id = None
     if claims and "sub" in claims:
         try:
@@ -696,7 +741,7 @@ def create_document_service(
 
 
 def process_document_from_cos_https(save_https: str, document_type: str, doc_id: str, tenant_id: str) -> str:
-    """从COS下载文档并转换为Markdown格式,存入数据库document表
+    """从COS下载文档并转换为Markdown格式,存入数据库document表,并切割成小文本块,存入向量数据库
 
     参数：
     - `save_https`: 文档在COS中的HTTPS链接。
@@ -709,44 +754,111 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
     """
 
     try:
-        md = MarkItDown()                # 默认配置
-
+        md = MarkItDown()
         ori_url = get_origin_url_from_save_https(save_https)
         logger.info(f"文档 {save_https} 转换为原始URL: {ori_url}")
-
-        # 先验证文件是否可访问
         import requests
         response = requests.head(ori_url, timeout=10)
         if response.status_code != 200:
             raise Exception(f"文件无法访问，HTTP状态码: {response.status_code}")
-
-        # 获取文件大小信息
         file_size = int(response.headers.get('Content-Length', 0))
         if file_size == 0:
             raise Exception("文件大小为0，可能文件为空或链接无效")
 
-        result = md.convert(ori_url)   # 支持 pathlib / URL / bytes
-        logger.info(
-            f"文档 {doc_id} 转换为Markdown内容，长度: {len(result.text_content)} 字符")
+        ext_map = {
+            "pdf": ".pdf",
+            "doc": ".doc",
+            "docx": ".docx",
+            "md": ".md",
+            "txt": ".txt",
+            "ppt": ".ppt",
+            "pptx": ".pptx",
+            "xls": ".xls",
+            "xlsx": ".xlsx",
+            "csv": ".csv",
+        }
+        forced_ext = ext_map.get(str(document_type or "").lower().strip())
 
+        def _convert_legacy_ppt_to_markdown() -> str:
+            """
+            解析ppt格式
+            """
+            import tempfile, os, shutil, subprocess
+            get_resp = requests.get(ori_url, stream=True, timeout=30)
+            get_resp.raise_for_status()
+            handle, ppt_path = tempfile.mkstemp(suffix=".ppt")
+            os.close(handle)
+            try:
+                with open(ppt_path, "wb") as f:
+                    for chunk in get_resp.iter_content(8192):
+                        f.write(chunk)
+                soffice = shutil.which("soffice") or shutil.which("libreoffice")
+                if not soffice:
+                    try:
+                        from tika import parser as tika_parser
+                        parsed = tika_parser.from_file(ppt_path)
+                        content = (parsed.get("content") or "").strip()
+                        if content:
+                            return content
+                    except Exception:
+                        pass
+                    try:
+                        import textract
+                        content = textract.process(ppt_path).decode("utf-8", "ignore").strip()
+                        if content:
+                            return content
+                    except Exception:
+                        pass
+                    raise RuntimeError("soffice_not_found")
+                outdir = tempfile.mkdtemp()
+                try:
+                    proc = subprocess.run(
+                        [soffice, "--headless", "--convert-to", "pptx", "--outdir", outdir, ppt_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                    )
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"convert_failed: {proc.stderr}")
+                    converted = None
+                    for name in os.listdir(outdir):
+                        if name.lower().endswith(".pptx"):
+                            converted = os.path.join(outdir, name)
+                            break
+                    if not converted:
+                        raise RuntimeError("pptx_not_generated")
+                    res = md.convert_local(converted, file_extension=".pptx")
+                    return res.text_content
+                finally:
+                    shutil.rmtree(outdir, ignore_errors=True)
+            finally:
+                try:
+                    os.unlink(ppt_path)
+                except Exception:
+                    pass
+
+        if forced_ext == ".ppt":
+            text_content = _convert_legacy_ppt_to_markdown()
+        else:
+            if forced_ext:
+                result = md.convert(ori_url, file_extension=forced_ext)
+            else:
+                result = md.convert(ori_url)
+            text_content = result.text_content
+
+        logger.info(f"文档 {doc_id} 转换为Markdown内容，长度: {len(text_content)} 字符")
         table_name, _ = _get_table_and_header()
-        # 插入数据库
         repo.update_document(
             doc_id=doc_id,
-            payload={"content": result.text_content, "status": "success"},
+            payload={"content": text_content, "status": "success"},
             tenant_id=tenant_id,
             table_name=table_name,
         )
-
-        # 将markdown大文本切割成小文本块
-        chunks = split_markdown_into_chunks(result.text_content)
+        chunks = split_markdown_into_chunks(text_content)
         index = 0
         for chunk in chunks:
             index += 1
-            
             logger.info(f"文档 {doc_id} 切割为Markdown块，长度: {len(chunk)} 字符")
-            
-            # 存入向量数据库
             create_chunk_embedding_service(
                 tenant_id=tenant_id,
                 chunk_id=f"{doc_id}_{index}",
@@ -756,6 +868,12 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
         return ""
     except Exception as e:
         logger.error(f"文档 {doc_id} ,原始URL: {ori_url} 转换为Markdown失败: {e}")
+        try:
+            msg = str(e)
+            if "soffice_not_found" in msg:
+                logger.error("缺少 LibreOffice/soffice，安装后支持 .ppt 转换：brew install --cask libreoffice；或将 .ppt 转为 .pptx 后再上传")
+        except Exception:
+            pass
         table_name, _ = _get_table_and_header()
         repo.update_document(
             doc_id=doc_id,
@@ -764,3 +882,138 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
             table_name=table_name,
         )
         return ""
+
+
+def rag_search_service(
+    *,
+    query: str,
+    tenant_id: str,
+    claims: Optional[Dict[str, Any]] = None,
+    doc_id: Optional[str] = None,
+    limit: int = 10,
+    distance_metric: str = "euclidean",
+    include_vector: bool = False,
+) -> list[Dict[str, Any]]:
+    _ensure_authenticated(claims)
+    table_name, _ = _get_table_and_header()
+    current_user_id: Optional[int] = None
+    if claims and "sub" in claims:
+        try:
+            current_user_id = int(claims["sub"])
+        except (ValueError, TypeError):
+            current_user_id = None
+    if current_user_id is None:
+        raise HTTPException(status_code=401, detail="无法获取用户身份信息")
+
+    s = get_settings()
+    user_table_name = getattr(s, "user_table_name", "users")
+    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permission")
+    tenant_table_name = "tenant"
+
+    user_info = user_repo.get_user_by_id(
+        user_id=current_user_id,
+        tenant_id=tenant_id,
+        table_name=user_table_name,
+    )
+    user_role = (user_info or {}).get("role", "user")
+    user_tenant_id = (user_info or {}).get("tenant_id", tenant_id)
+
+    # 预先计算可访问的 doc_id 集合并排除禁用文档
+    # system 文档：任何用户可见，但需过滤 disabled
+    system_doc_ids = repo.list_doc_ids_by_tenant(
+        tenant_id="system",
+        table_name=table_name,
+        exclude_disabled=True,
+    )
+    # 当前租户文档：admin 可见全部，否则根据权限表（admin/read）
+    if user_role == "admin":
+        tenant_doc_ids = repo.list_doc_ids_by_tenant(
+            tenant_id=user_tenant_id,
+            table_name=table_name,
+            exclude_disabled=True,
+        )
+    else:
+        tenant_doc_ids = repo.list_tenant_doc_ids_with_permission(
+            user_id=current_user_id,
+            tenant_id=user_tenant_id,
+            table_name=table_name,
+            perm_table_name=perm_table,
+            exclude_disabled=True,
+        )
+
+    # 若指定了 doc_id，则在两个集合中分别取交集，仅检索该文档
+    if doc_id:
+        system_doc_ids = [doc_id] if doc_id in set(system_doc_ids) else []
+        tenant_doc_ids = [doc_id] if doc_id in set(tenant_doc_ids) else []
+
+    # 两端都无可检索文档，直接返回
+    if not system_doc_ids and not tenant_doc_ids:
+        return []
+
+    # 有可检索文档后再生成查询向量，避免不必要的计算
+    from agentlz.core.embedding_model_factory import get_hf_embeddings
+    emb = get_hf_embeddings()
+    vec = emb.embed_query(str(query))
+
+    # 双租户分别检索并合并
+    tenant_results = []
+    system_results = []
+    if tenant_doc_ids:
+        tenant_results = search_similar_chunks_service(
+            tenant_id=user_tenant_id,
+            embedding=vec,
+            doc_ids=tenant_doc_ids,
+            distance_metric=distance_metric,
+            limit=limit,
+            include_vector=include_vector,
+        )
+    if system_doc_ids:
+        system_results = search_similar_chunks_service(
+            tenant_id="system",
+            embedding=vec,
+            doc_ids=system_doc_ids,
+            distance_metric=distance_metric,
+            limit=limit,
+            include_vector=include_vector,
+        )
+
+    merged = tenant_results + system_results
+    # 全局排序后截取 top-K（距离越小越相似）
+    merged.sort(key=lambda x: float(x.get("similarity_score", 1e9)))
+    merged = merged[:limit]
+
+    # 补充文档元数据并进行最终权限确认（防御性）
+    enriched: list[Dict[str, Any]] = []
+    for r in merged:
+        src_tid = str(r.get("tenant_id") or user_tenant_id)
+        d = repo.get_document_with_names_by_id(
+            doc_id=str(r.get("doc_id")),
+            tenant_id=src_tid,
+            table_name=table_name,
+            user_table_name=user_table_name,
+            tenant_table_name=tenant_table_name,
+        )
+        if not d or int(d.get("disabled", 0) or 0) == 1:
+            continue
+        if not _check_document_access_permission(
+            document=d,
+            current_user_id=current_user_id,
+            tenant_id=src_tid,
+        ):
+            continue
+        if d.get("upload_time") is not None:
+            d["upload_time"] = str(d["upload_time"])
+        item: Dict[str, Any] = {
+            "chunk_id": r.get("chunk_id"),
+            "tenant_id": src_tid,
+            "doc_id": r.get("doc_id"),
+            "content": r.get("content"),
+            "similarity_score": r.get("similarity_score"),
+            "doc_title": d.get("title"),
+            "doc_type": d.get("type"),
+            "doc_save_https": d.get("save_https"),
+        }
+        if include_vector and r.get("embedding") is not None:
+            item["embedding"] = r.get("embedding")
+        enriched.append(item)
+    return enriched

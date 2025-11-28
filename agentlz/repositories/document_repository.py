@@ -76,7 +76,7 @@ def list_documents(
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
     list_sql = text(
         f"""
-        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https
+        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https, disabled
         FROM `{table_name}`
         {where_sql}
         ORDER BY {sort_col} {order_dir}
@@ -95,7 +95,7 @@ def get_document_by_id(*, doc_id: str, tenant_id: str, table_name: str) -> Optio
     # 根据文档ID查询（租户隔离）
     sql = text(
         f"""
-        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https
+        SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https, disabled
         FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
         """
     )
@@ -219,6 +219,7 @@ def update_document(
         "tags",
         "description",
         "meta_https",
+        "disabled",
         # 注：upload_time 通常由系统写入，不建议在普通更新中修改；如有需要可加入白名单
     ]
 
@@ -233,6 +234,16 @@ def update_document(
                     params[col] = ",".join(str(tag) for tag in tags)
                 else:
                     params[col] = str(tags)
+            elif col == "disabled":
+                val = payload[col]
+                if isinstance(val, bool):
+                    params[col] = 1 if val else 0
+                elif isinstance(val, (int, float)):
+                    params[col] = 1 if int(val) != 0 else 0
+                elif isinstance(val, str):
+                    params[col] = 1 if val.strip().lower() in ("1", "true", "yes") else 0
+                else:
+                    params[col] = 0
             else:
                 params[col] = payload[col]
             sets.append(f"{col} = :{col}")
@@ -251,7 +262,7 @@ def update_document(
             return None
         ret = conn.execute(
             text(
-                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
+                f"SELECT id, tenant_id, uploaded_by_user_id, status, upload_time, title, content, type, tags, description, meta_https, save_https, disabled FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
             ),
             {"id": doc_id, "tenant_id": tenant_id},
         ).mappings().first()
@@ -304,6 +315,44 @@ def get_document_with_names_by_id(
     engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": doc_id, "tenant_id": tenant_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def get_document_with_names_by_id_any_tenant(
+    *,
+    doc_id: str,
+    table_name: str,
+    user_table_name: str,
+    tenant_table_name: str,
+) -> Optional[Dict[str, Any]]:
+    '''
+    获取文档信息（不按租户隔离），包含租户名称和上传用户名
+    参数
+    - doc_id: 文档ID
+    - table_name: 文档表名
+    - user_table_name: 用户表名
+    - tenant_table_name: 租户表名
+    返回
+    - 文档信息（包含租户名称和上传用户名）
+    '''
+    sql = text(
+        f"""
+        SELECT 
+            d.id, d.tenant_id, d.uploaded_by_user_id, d.status, d.upload_time, d.title, d.content, d.type, d.tags, d.description, d.meta_https, d.save_https,
+            t.name AS tenant_name,
+            u.full_name AS uploaded_by_user_name,
+            u.username AS uploaded_by_user_username,
+            u.avatar AS uploaded_by_user_avatar,
+            u.email AS uploaded_by_user_email
+        FROM `{table_name}` d
+        LEFT JOIN `{tenant_table_name}` t ON d.tenant_id = t.id
+        LEFT JOIN `{user_table_name}` u ON u.id = d.uploaded_by_user_id
+        WHERE d.id = :id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"id": doc_id}).mappings().first()
     return dict(row) if row else None
 
 
@@ -495,3 +544,48 @@ def list_tenant_documents_with_permission_with_names(
         total = conn.execute(count_sql, params).scalar() or 0
         rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
     return [dict(r) for r in rows], int(total)
+
+
+def list_doc_ids_by_tenant(
+    *,
+    tenant_id: str,
+    table_name: str,
+    exclude_disabled: bool = True,
+) -> List[str]:
+    """按租户获取全部文档ID，可选择排除禁用文档"""
+    where = ["tenant_id = :tenant_id"]
+    if exclude_disabled:
+        where.append("disabled = 0")
+    where_sql = "WHERE " + " AND ".join(where)
+    sql = text(f"SELECT id FROM `{table_name}` {where_sql}")
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"tenant_id": tenant_id}).mappings().all()
+    return [str(r["id"]) for r in rows]
+
+
+def list_tenant_doc_ids_with_permission(
+    *,
+    user_id: int,
+    tenant_id: str,
+    table_name: str,
+    perm_table_name: str,
+    exclude_disabled: bool = True,
+) -> List[str]:
+    """获取当前用户在指定租户下可访问的文档ID集合（admin/read），支持排除禁用"""
+    cond = ["d.tenant_id = :tenant_id", "udp.user_id = :user_id", "udp.perm IN ('admin','read')"]
+    if exclude_disabled:
+        cond.append("d.disabled = 0")
+    where_sql = "WHERE " + " AND ".join(cond)
+    sql = text(
+        f"""
+        SELECT DISTINCT d.id
+        FROM `{table_name}` d
+        INNER JOIN `{perm_table_name}` udp ON d.id = udp.doc_id
+        {where_sql}
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"tenant_id": tenant_id, "user_id": user_id}).mappings().all()
+    return [str(r["id"]) for r in rows]

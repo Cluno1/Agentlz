@@ -6,7 +6,7 @@ from __future__ import annotations
 当未显式提供向量时，基于内容文本自动生成嵌入向量。
 """
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Literal
 
 from agentlz.core.embedding_model_factory import get_hf_embeddings
 from agentlz.repositories.chunk_embeddings_repository import (
@@ -15,6 +15,7 @@ from agentlz.repositories.chunk_embeddings_repository import (
     list_chunk_embeddings as _list,
     update_chunk_embedding as _update,
     delete_chunk_embedding as _delete,
+    search_similar_chunks as _search_similar,
 )
 
 
@@ -134,7 +135,67 @@ def delete_chunk_embedding_service(*, tenant_id: str, chunk_id: str) -> bool:
     """
     return _delete(tenant_id=tenant_id, chunk_id=chunk_id)
 
-# markdown 文本切割成小文本块
+
+def search_similar_chunks_service(
+    *,
+    tenant_id: str,
+    embedding: Sequence[float],
+    doc_id: Optional[str] = None,
+    doc_ids: Optional[Sequence[str]] = None,
+    distance_metric: Literal["euclidean", "cosine"] = "euclidean",
+    limit: int = 10,
+    include_vector: bool = False
+) -> List[Dict[str, Any]]:
+    """向量相似度搜索服务
+    
+    基于给定的embedding向量，使用指定的距离度量方式搜索最相似的文本块。
+    支持欧几里得距离和余弦相似度两种度量方式。
+    
+    行为:
+        - 调用repository层进行向量相似度搜索
+        - 支持按文档ID过滤结果
+        - 返回按相似度排序的结果列表
+    
+    参数:
+        - tenant_id: 租户标识，用于RLS隔离
+        - embedding: 查询向量，维度需与存储向量一致(1536维)
+        - doc_id: 可选的文档ID过滤条件，为空则搜索所有文档
+        - distance_metric: 距离度量方式，可选"euclidean"或"cosine"
+        - limit: 返回结果数量上限
+        - include_vector: 是否返回向量字段
+    
+    返回值:
+        - 相似文本块列表，按相似度升序排列（距离越小越相似）
+        - 每个结果包含: chunk_id, doc_id, content, created_at, similarity_score
+        - 当include_vector=True时额外包含embedding向量
+    
+    异常:
+        - ValueError: 当distance_metric不是"euclidean"或"cosine"时
+        - RuntimeError: 当向量维度不匹配或数据库查询失败时
+    
+    示例:
+        >>> query_embedding = [0.1, 0.2, ..., 0.1536]  # 1536维向量
+        >>> results = search_similar_chunks_service(
+        ...     tenant_id="tenant_123",
+        ...     embedding=query_embedding,
+        ...     distance_metric="cosine",
+        ...     limit=5
+        ... )
+        >>> for result in results:
+        ...     print(f"相似度: {result['similarity_score']:.4f}")
+        ...     print(f"内容: {result['content'][:100]}...")
+    """
+    return _search_similar(
+        tenant_id=tenant_id,
+        embedding=embedding,
+        doc_id=doc_id,
+        doc_ids=doc_ids,
+        distance_metric=distance_metric,
+        limit=limit,
+        include_vector=include_vector
+    )
+
+
 def split_markdown_into_chunks(content: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
     """将Markdown文本切割成适合向量化的块
     
@@ -151,99 +212,46 @@ def split_markdown_into_chunks(content: str, chunk_size: int = 500, chunk_overla
     Returns:
         List[str]: 文本块列表
     """
-    try:
-        # langchain 1.0+ 版本的导入
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownTextSplitter
-            use_markdown_splitter = True
-        except ImportError:
-            # 如果新版导入失败，尝试旧版导入
-            try:
-                from langchain.text_splitter import RecursiveCharacterTextSplitter
-                use_markdown_splitter = False
-            except ImportError:
-                # 再尝试旧版的text_splitters
-                from langchain.text_splitters import RecursiveCharacterTextSplitter
-                use_markdown_splitter = False
-        
-        if use_markdown_splitter:
-            # 新版langchain的逻辑
-            markdown_splitter = MarkdownTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                separators=["\n\n", "\n", "。", "！", "？", "，", " ", ""]
-            )
+      
+    try:      
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
             
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                separators=[
-                    "\n\n",      # 段落
-                    "\n",        # 换行
-                    "。",        # 中文句号
-                    "！",        # 中文感叹号
-                    "？",        # 中文问号
-                    "，",        # 中文逗号
-                    " ",         # 空格
-                    ""           # 字符级别
-                ],
-                length_function=len,
-                is_separator_regex=False
-            )
-            
-            # 先按Markdown结构切割，再按中文语义切割
-            md_chunks = markdown_splitter.split_text(content)
-            final_chunks = []
-
-            for chunk in md_chunks:
-                if len(chunk) > chunk_size:
-                    # 如果Markdown块太大，进一步用递归切割器分割
-                    sub_chunks = text_splitter.split_text(chunk)
-                    final_chunks.extend(sub_chunks)
-                else:
-                    final_chunks.append(chunk)
-            return final_chunks
-        else:
-            # langchain 1.0.2版本的逻辑 - 只用RecursiveCharacterTextSplitter
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                separators=[
-                    "\n\n",      # 段落
-                    "\n",        # 换行
-                    "#",         # Markdown标题
-                    "##",
-                    "###",
-                    "####",
-                    "。",        # 中文句号
-                    "！",        # 中文感叹号
-                    "？",        # 中文问号
-                    "，",        # 中文逗号
-                    " ",         # 空格
-                    ""           # 字符级别
-                ],
-                length_function=len
-            )
-            
-            # 直接使用RecursiveCharacterTextSplitter切割
-            chunks = text_splitter.split_text(content)
-            return chunks
+        # 尝试新版本的参数格式
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=[
+                "\n\n",      # 段落
+                "\n",        # 换行
+                "#",         # Markdown标题
+                "##",        # Markdown二级标题
+                "###",       # Markdown三级标题
+                "####",      # Markdown四级标题
+                "。",        # 中文句号
+                "！",        # 中文感叹号
+                "？",        # 中文问号
+                "，",        # 中文逗号
+                " ",         # 空格
+                ""           # 字符级别
+            ]
+        )
+    
+        # 直接使用RecursiveCharacterTextSplitter切割
+        chunks = text_splitter.split_text(content)
+        return chunks
             
     except ImportError as e:
         # 如果LangChain完全不可用，使用基础的中文切割
         print(f"LangChain导入失败: {e}，使用备用切割方案")
         return basic_chinese_text_split(content, chunk_size, chunk_overlap)
-    except Exception as e:
-        # 其他错误，使用备用方案
-        print(f"LangChain切割失败: {e}，使用备用切割方案")
-        return basic_chinese_text_split(content, chunk_size, chunk_overlap)
+   
 
 def basic_chinese_text_split(content: str, max_size: int = 500, overlap: int = 50) -> List[str]:
     """基础中文文本切割（备用方案）"""
     import re
     
     # 按中文句子结束符和Markdown结构分割
-    sentences = re.split(r'([。！？\n]+|#{1,6}\s+)', content)
+    sentences = re.split(r'([。！？, .\n]+|#{1,6}\s+)', content)
     
     chunks = []
     current_chunk = ""
