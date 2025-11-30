@@ -1,6 +1,6 @@
 # 责任链（Planner → Executor → Check）开发说明（最新实现）
 
-本开发文档基于 `d:\PyCharm\AgentCode\Agentlz\docs\dev.md` 的工作流与分层规范，给出三类 Agent（planner/executor/check）的责任链实现思路与落地指南。本文仅规划设计与接口，不在本次提交中实现代码。
+本文基于 `docs/dev.md` 的工作流与分层规范，给出三类 Agent（planner/executor/check）的责任链实现与流式事件（SSE）输出的落地说明。
 
 ## 目标与范围
 - 责任链流程遵循 `docs/dev.md` 的智能调度 Agent 核心工作流：
@@ -42,9 +42,9 @@ graph TD
     
 ```
 - 兼容现有实现：
-  - 规划：`agentlz/agents/planner/planner_agent.py`
-  - 执行：`agentlz/agents/executor/executor_agnet.py`
-  - 校验：`agentlz/agents/check/check_agent_1.py`
+  - 规划：`agentlz/services/chain/steps/step1_planner.py`
+  - 执行：`agentlz/services/chain/steps/step2_executor.py`
+  - 校验：`agentlz/services/chain/steps/step3_check.py`
 - 支持异步执行、超时/重试、失败回退与统一日志指标。
 
 ## 分层与依赖
@@ -56,13 +56,12 @@ graph TD
 - 基础设施（`core`）：日志、重试、并发、模型工厂、错误类型。
 
 目录规划：
-- `agentlz/services/chain/chain_service.py`：入口执行器与上下文定义（`run_chain`、`ChainContext`、`_is_check_passed`）。
-- `agentlz/services/chain/handler.py`：节点基类原型。
-- `agentlz/services/chain/steps/`：分步处理器与根节点：
-  - `root_handler.py`
-  - `step1_planner.py`
-  - `step2_executor.py`
-  - `step3_check.py`
+- `agentlz/services/chain/chain_service.py`：入口执行器与上下文（`run_chain`、`ChainContext`、`_is_check_passed`）；流式事件生成器（`stream_chain_generator`）
+- `agentlz/app/routers/chain.py`：SSE 路由 `GET /v1/chain/stream?user_input=...`
+- `agentlz/schemas/events.py`：事件壳 `EventEnvelope`
+- `agentlz/schemas/workflow.py`：工作流模型（`ToolCall`、`ExecutorTrace`）
+- `agentlz/services/chain/handler.py`：节点基类原型
+- `agentlz/services/chain/steps/`：分步处理器与根节点
 
 ## 关键概念与数据结构
 - `ChainContext`
@@ -74,7 +73,7 @@ graph TD
 - `PlannerHandler`
   - 依据可信度表或自我规划生成 `WorkflowPlan`；将 `execution_chain/mcp_config/instructions` 写入 `ctx.plan`。
 - `ExecutorHandler`
-  - 复用现有 `MCPChainExecutor.execute_chain` 执行计划；将“工具调用摘要 + 最终结果”写入 `ctx.fact_msg`；不再把每次工具调用写入 `steps`，而是写入 `ctx.tool_calls`（结构化）。
+  - 调用 MCP 工具链执行计划；将“工具调用摘要 + 最终结果”写入 `ctx.fact_msg`；不再把每次工具调用写入 `steps`，而是写入 `ctx.tool_calls`（结构化）。
 - `CheckHandler`
   - 复用 `check_agent` 对 `objectMsg/factMsg` 进行结构化校验；按如下方式重构 `fact_msg`：
     - Agent流程：来自 `ctx.steps` 的高层轨迹
@@ -148,9 +147,51 @@ from agentlz.services.chain.chain_service import run_chain
 - `CheckHandler.next` → 通过则 `None`，未通过则重置 `ctx.plan` 并回到 `PlannerHandler`
 
 ## 结构化模型（执行器）
-- `ToolCall`（`agentlz/schemas/workflow.py`）：`name/status/input/output`
-- `ExecutorTrace`（`agentlz/schemas/workflow.py`）：`calls: List[ToolCall]`、`final_result: str`
+- `ToolCall`（`agentlz/schemas/workflow.py`）：`name/status/input/output/server`
+- `ExecutorTrace`（`agentlz/schemas/workflow.py`）：`calls: List[ToolCall]`、`actual_chain: List[str]`、`final_result: str`
   - 执行器创建代理时声明 `response_format=ExecutorTrace`，在无回调日志时解析结构化响应作为兜底。
+
+## 流式事件（SSE）
+- 路由：`GET /v1/chain/stream?user_input=...`（`agentlz/app/routers/chain.py:10-15`）
+- 生成器：`stream_chain_generator`（`agentlz/services/chain/chain_service.py:99-123,176-188`），按节点推进：
+  - `chain.step`：阶段名（`planner/executor/check`），来自各步骤显式发送
+  - `planner.plan`：`WorkflowPlan`，来自 `ctx.plan`
+  - `call.start`：工具调用开始事件，来自执行器工具回调
+  - `call.end`：工具调用结束事件，状态统一为 `success`
+  - `check.summary`：`CheckOutput`，来自 `ctx.check_result`
+  - `final`：最终文本，来自 `ctx.fact_msg`
+- 帧格式：每帧三行（`event/id/data`）+ 空行，`data` 为 `EventEnvelope` JSON（`agentlz/schemas/events.py:4-10`）
+
+### 前端消费参考
+```javascript
+const es = new EventSource('/v1/chain/stream?user_input=你的输入');
+es.addEventListener('chain.step', e => {
+  const env = JSON.parse(e.data);
+  setActiveStep(env.payload);
+});
+es.addEventListener('planner.plan', e => {
+  const env = JSON.parse(e.data);
+  renderPlan(env.payload);
+});
+es.addEventListener('call.end', e => {
+  const env = JSON.parse(e.data);
+  appendToolCard(env.payload);
+});
+
+es.addEventListener('call.start', e => {
+  const env = JSON.parse(e.data);
+  appendToolCard(env.payload);
+});
+es.addEventListener('check.summary', e => {
+  const env = JSON.parse(e.data);
+  renderCheck(env.payload);
+});
+es.addEventListener('final', e => {
+  const env = JSON.parse(e.data);
+  setResult(env.payload);
+  es.close();
+});
+```
 
 ## 接入入口层
 - CLI：在 `agentlz/app/cli.py` 增加命令 `chain-run`，从命令行触发责任链并打印结果与指标。

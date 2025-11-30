@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     user_doc_permission_table_name: str = Field(
         default="user_doc_permission", env="USER_DOC_PERMISSION_TABLE_NAME")
 
+    # MCP 混合检索参数（语义/可信度融合）
+    # alpha：语义权重；theta：语义门槛；N：语义召回 Top-N；k：最终返回 Top-k
+    mcp_search_alpha: float = Field(default=0.7, env="MCP_SEARCH_ALPHA")
+    mcp_search_theta: float = Field(default=0.75, env="MCP_SEARCH_THETA")
+    mcp_search_topn: int = Field(default=50, env="MCP_SEARCH_TOPN")
+    mcp_search_topk: int = Field(default=5, env="MCP_SEARCH_TOPK")
+
 
 def get_settings() -> Settings:
     return Settings()
