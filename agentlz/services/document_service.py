@@ -150,7 +150,15 @@ def _get_table_and_header() -> Tuple[str, str]:
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
-    if not isinstance(claims, dict):
+    """确保请求包含有效认证信息。
+
+    参数：
+    - `claims`: 用户认证 claims，包含用户ID等信息。
+
+    抛出：
+    - `HTTPException(401)`：若 `claims` 为空或不是字典类型。
+    """
+    if not claims or not isinstance(claims, dict):
         raise HTTPException(status_code=401, detail="缺少或非法的 Authorization 头")
 
 # 检查文档访问权限
@@ -889,11 +897,26 @@ def rag_search_service(
     query: str,
     tenant_id: str,
     claims: Optional[Dict[str, Any]] = None,
-    doc_id: Optional[str] = None,
+    doc_ids: Optional[List[str]] = None,
     limit: int = 10,
     distance_metric: str = "euclidean",
     include_vector: bool = False,
 ) -> list[Dict[str, Any]]:
+    """
+    执行 RAG 搜索，返回符合条件的文档块列表。
+
+    参数:
+        query (str): 搜索查询字符串。
+        tenant_id (str): 租户 ID，用于确定文档范围。
+        claims (Optional[Dict[str, Any]]): 用户认证 claims，包含用户 ID 等信息。
+        doc_ids (Optional[List[str]]): 可选文档 ID 列表
+        limit (int): 返回结果数量上限，默认 10。
+        distance_metric (str): 距离度量方法，默认欧氏距离。"euclidean"或"cosine"
+        include_vector (bool): 是否包含向量表示，默认不包含。
+
+    返回:
+        list[Dict[str, Any]]: 符合条件的文档块列表，每个元素包含文档 ID、内容、距离等信息。
+    """
     _ensure_authenticated(claims)
     table_name, _ = _get_table_and_header()
     current_user_id: Optional[int] = None
@@ -908,7 +931,7 @@ def rag_search_service(
     s = get_settings()
     user_table_name = getattr(s, "user_table_name", "users")
     perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permission")
-    tenant_table_name = "tenant"
+    tenant_table_name =  getattr(s, "tenant_table_name", "tenant")
 
     user_info = user_repo.get_user_by_id(
         user_id=current_user_id,
@@ -919,12 +942,14 @@ def rag_search_service(
     user_tenant_id = (user_info or {}).get("tenant_id", tenant_id)
 
     # 预先计算可访问的 doc_id 集合并排除禁用文档
+
     # system 文档：任何用户可见，但需过滤 disabled
     system_doc_ids = repo.list_doc_ids_by_tenant(
         tenant_id="system",
         table_name=table_name,
         exclude_disabled=True,
     )
+
     # 当前租户文档：admin 可见全部，否则根据权限表（admin/read）
     if user_role == "admin":
         tenant_doc_ids = repo.list_doc_ids_by_tenant(

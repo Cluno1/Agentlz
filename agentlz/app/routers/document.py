@@ -155,7 +155,7 @@ def search_rag(
     request: Request,
     claims: Dict[str, Any] = Depends(require_auth),
     query: str = Query(..., description="查询文本"),
-    doc_id: Optional[str] = Query(None, description="限定文档ID"),
+    doc_id: Optional[str] = Query(None, description="限定文档ID"), 
     limit: int = Query(10, ge=1, le=50, description="返回数量"),
     metric: str = Query("euclidean", regex="^(euclidean|cosine)$", description="距离度量"),
     include_vector: bool = Query(False, description="是否返回向量"),
