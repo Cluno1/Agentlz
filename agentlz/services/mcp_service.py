@@ -121,6 +121,11 @@ def update_trust_by_tool_assessments(assessments: List[ToolAssessment], name_to_
         return
     rows = _get_mcp_agents_by_ids(ids)
     cur: Dict[int, float] = {int(r.get("id")): float(r.get("trust_score", 0) or 0) for r in rows}
+    from agentlz.config.settings import get_settings
+    s = get_settings()
+    alpha_cfg = float(getattr(s, "mcp_trust_update_alpha", 0.2))
+    err_cap = int(getattr(s, "mcp_trust_error_cap", 30))
+    skip_cap = int(getattr(s, "mcp_trust_skip_cap", 60))
     for agent_id in ids:
         ta = id_map.get(agent_id)
         if not ta:
@@ -128,11 +133,11 @@ def update_trust_by_tool_assessments(assessments: List[ToolAssessment], name_to_
         s = int(getattr(ta, "micro_score", 0) or 0)
         st = str(getattr(ta, "status", "")).lower()
         if st == "error":
-            s = min(s, 30)
+            s = min(s, err_cap)
         elif st == "skipped":
-            s = min(s, 60)
+            s = min(s, skip_cap)
         prev = float(cur.get(agent_id, 0))
-        alpha = 0.2
+        alpha = alpha_cfg
         new_score = floor((1 - alpha) * prev + alpha * s)
         if new_score < 0:
             new_score = 0

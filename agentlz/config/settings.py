@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     mcp_search_topn: int = Field(default=50, env="MCP_SEARCH_TOPN")
     mcp_search_topk: int = Field(default=5, env="MCP_SEARCH_TOPK")
 
+    # MCP 可信度更新参数
+    mcp_trust_update_alpha: float = Field(default=0.2, env="MCP_TRUST_UPDATE_ALPHA")
+    mcp_trust_error_cap: int = Field(default=30, env="MCP_TRUST_ERROR_CAP")
+    mcp_trust_skip_cap: int = Field(default=60, env="MCP_TRUST_SKIP_CAP")
+
+    # 事件壳版本
+    event_schema_version: str = Field(default="v1", env="EVENT_SCHEMA_VERSION")
+
     chain_hard_limit: int = Field(default=20, env="CHAIN_HARD_LIMIT")
 
 

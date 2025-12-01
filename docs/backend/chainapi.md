@@ -29,42 +29,42 @@ curl -N -H "X-Tenant-ID: default" \
 ```
 event: chain.step
 id: 1
-data: {"evt":"chain.step","seq":1,"ts":"2025-11-27T12:34:56Z","trace_id":"<uuid>","schema":"v1","payload":"planner"}
+data: {"evt":"chain.step","seq":1,"ts":"2025-11-27T12:34:56Z","trace_id":"<uuid>","schema_version":"v1","payload":"planner"}
 
 
 event: planner.plan
 id: 2
-data: {"evt":"planner.plan","seq":2,"ts":"2025-11-27T12:34:57Z","trace_id":"<uuid>","schema":"v1","payload":{"execution_chain":["executor","check"],"mcp_config":[/*...*/],"instructions":"..."}}
+data: {"evt":"planner.plan","seq":2,"ts":"2025-11-27T12:34:57Z","trace_id":"<uuid>","schema_version":"v1","payload":{"execution_chain":["executor","check"],"mcp_config":[/*...*/],"instructions":"..."}}
 
 
 event: chain.step
 id: 3
-data: {"evt":"chain.step","seq":3,"ts":"2025-11-27T12:34:57Z","trace_id":"<uuid>","schema":"v1","payload":"executor"}
+data: {"evt":"chain.step","seq":3,"ts":"2025-11-27T12:34:57Z","trace_id":"<uuid>","schema_version":"v1","payload":"executor"}
 
 
 event: call.start
 id: 4
-data: {"evt":"call.start","seq":4,"ts":"2025-11-27T12:34:58Z","trace_id":"<uuid>","schema":"v1","payload":{"name":"search","status":"start","input":"...","output":"","server":""}}
+data: {"evt":"call.start","seq":4,"ts":"2025-11-27T12:34:58Z","trace_id":"<uuid>","schema_version":"v1","payload":{"name":"search","status":"start","input":"...","output":"","server":""}}
 
 
 event: call.end
 id: 5
-data: {"evt":"call.end","seq":5,"ts":"2025-11-27T12:34:59Z","trace_id":"<uuid>","schema":"v1","payload":{"name":"search","status":"success","input":"...","output":"...","server":"executor"}}
+data: {"evt":"call.end","seq":5,"ts":"2025-11-27T12:34:59Z","trace_id":"<uuid>","schema_version":"v1","payload":{"name":"search","status":"success","input":"...","output":"...","server":"executor"}}
 
 
 event: chain.step
 id: 6
-data: {"evt":"chain.step","seq":6,"ts":"2025-11-27T12:35:00Z","trace_id":"<uuid>","schema":"v1","payload":"check"}
+data: {"evt":"chain.step","seq":6,"ts":"2025-11-27T12:35:00Z","trace_id":"<uuid>","schema_version":"v1","payload":"check"}
 
 
 event: check.summary
 id: 7
-data: {"evt":"check.summary","seq":7,"ts":"2025-11-27T12:35:01Z","trace_id":"<uuid>","schema":"v1","payload":{"judge":true,"score":90,"reasoning":"...","tool_assessments":[/*...*/]}}
+data: {"evt":"check.summary","seq":7,"ts":"2025-11-27T12:35:01Z","trace_id":"<uuid>","schema_version":"v1","payload":{"judge":true,"score":90,"reasoning":"...","tool_assessments":[/*...*/]}}
 
 
 event: final
 id: 8
-data: {"evt":"final","seq":8,"ts":"2025-11-27T12:35:02Z","trace_id":"<uuid>","schema":"v1","payload":"最终结果文本"}
+data: {"evt":"final","seq":8,"ts":"2025-11-27T12:35:02Z","trace_id":"<uuid>","schema_version":"v1","payload":"最终结果文本"}
 ```
 
 ### 事件类型与负载
