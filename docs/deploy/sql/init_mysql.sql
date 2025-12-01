@@ -122,10 +122,29 @@ CREATE TABLE `user_doc_permission` (
     INDEX `idx_perm_doc` (`doc_id`) USING BTREE -- 按文档过滤加速
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
+DROP TABLE IF EXISTS `user_agent_permission`;
+CREATE TABLE `user_agent_permission` (
+    `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+    `user_id` bigint(20) UNSIGNED NOT NULL,
+    `agent_id` bigint(20) UNSIGNED NOT NULL,
+    `perm` enum(
+        'admin',
+        'read',
+        'write',
+        'none'
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'read',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`) USING BTREE,
+    UNIQUE INDEX `uk_user_agent` (`user_id`, `agent_id`) USING BTREE,
+    INDEX `idx_perm_user` (`user_id`) USING BTREE,
+    INDEX `idx_perm_agent` (`agent_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
 DROP TABLE IF EXISTS `agent`;
 CREATE TABLE `agent` (
   `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Agent名称',
+  `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID（多租户隔离）',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建的用户ID',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
