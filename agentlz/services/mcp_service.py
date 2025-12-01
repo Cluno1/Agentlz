@@ -40,7 +40,12 @@ def create_mcp_agent_service(payload: Dict[str, Any]) -> Dict[str, Any]:
         vec,
     )
     try:
-        _update_trust_pg(int(row.get("id")), float(row.get("trust_score", 0) or 0))
+        ts = float(row.get("trust_score", 0) or 0)
+        if ts < 0:
+            ts = 0.0
+        if ts > 100:
+            ts = 100.0
+        _update_trust_pg(int(row.get("id")), ts)
     except Exception:
         pass
     return row
@@ -64,7 +69,12 @@ def update_mcp_agent_service(agent_id: int, payload: Dict[str, Any]) -> Optional
         )
     if row and ("trust_score" in payload and payload["trust_score"] is not None):
         try:
-            _update_trust_pg(int(row.get("id")), float(row.get("trust_score", 0) or 0))
+            ts = float(row.get("trust_score", 0) or 0)
+            if ts < 0:
+                ts = 0.0
+            if ts > 100:
+                ts = 100.0
+            _update_trust_pg(int(row.get("id")), ts)
         except Exception:
             pass
     return row
@@ -124,6 +134,10 @@ def update_trust_by_tool_assessments(assessments: List[ToolAssessment], name_to_
         prev = float(cur.get(agent_id, 0))
         alpha = 0.2
         new_score = floor((1 - alpha) * prev + alpha * s)
+        if new_score < 0:
+            new_score = 0
+        if new_score > 100:
+            new_score = 100
         update_mcp_agent_service(agent_id, {"trust_score": new_score})
         try:
             _update_trust_pg(agent_id, float(new_score))

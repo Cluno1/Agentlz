@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     mcp_search_topn: int = Field(default=50, env="MCP_SEARCH_TOPN")
     mcp_search_topk: int = Field(default=5, env="MCP_SEARCH_TOPK")
 
+    chain_hard_limit: int = Field(default=20, env="CHAIN_HARD_LIMIT")
+
 
 def get_settings() -> Settings:
     return Settings()

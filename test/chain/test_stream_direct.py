@@ -29,14 +29,16 @@ def _pretty_print(evt: str, env: dict, raw: bool = False) -> None:
     elif evt == "call.end":
         print(json.dumps({"seq": seq, "ts": ts, "event": evt, "name": payload.get("name"), "status": payload.get("status"), "output": payload.get("output")}, ensure_ascii=False), flush=True)
     elif evt == "check.summary":
-        judge = None
-        score = None
-        try:
-            judge = payload.get("judge")
-            score = payload.get("score")
-        except Exception:
-            pass
-        print(json.dumps({"seq": seq, "ts": ts, "event": evt, "judge": judge, "score": score}, ensure_ascii=False), flush=True)
+        out = {
+            "seq": seq,
+            "ts": ts,
+            "event": evt,
+            "judge": payload.get("judge"),
+            "score": payload.get("score"),
+            "reasoning": payload.get("reasoning"),
+            "tool_assessments": payload.get("tool_assessments"),
+        }
+        print(json.dumps(out, ensure_ascii=False), flush=True)
     elif evt == "final":
         text = str(payload or "")
         short = (text[:160] + "…") if len(text) > 160 else text

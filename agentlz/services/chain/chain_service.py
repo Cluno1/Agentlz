@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from uuid import uuid4
 from dataclasses import asdict
+from agentlz.config.settings import get_settings
 from agentlz.schemas.events import EventEnvelope
 from agentlz.schemas.workflow import ToolCall
 from .handler import Handler
@@ -69,34 +70,7 @@ def _is_check_passed(res: Any) -> bool:
     return False
 
 
-    
-
-
-async def run_chain(user_input: Any, *, max_steps: int = 6) -> ChainContext:
-    """入口执行器
-
-    初始化 `ChainContext`，设定任务与步数上限，启动根节点并按节点自决策进行跳转。
-    当校验通过或达到步数上限时结束。
-    """
-    from .steps.root_handler import RootHandler
-
-    ctx = ChainContext(user_input)
-    ctx.current_task = str(user_input)
-    ctx.max_step = max_steps
-    root = RootHandler()
-    steps = 0
-    cur: Optional[Handler] = root
-    while cur is not None and steps < max_steps:
-        steps += 1
-        ctx = await cur.handle(ctx)
-        nxt = cur.next(ctx)
-        if nxt is None:
-            break
-        cur = nxt
-    return ctx
-
-
-async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dict[str, Any]):
+async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dict[str, Any], max_steps: Optional[int] = None):
     """
     SSE 事件流生成器（异步生成器）。
 
@@ -154,10 +128,6 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
         return f"event: {evt}\nid: {env.seq}\ndata: {txt}\n\n"
 
     from .steps.root_handler import RootHandler
-    from .steps.step1_planner import PlannerHandler
-    from .steps.step2_executor import ExecutorHandler
-    from .steps.step3_check import CheckHandler
-
     import asyncio
     q: asyncio.Queue[str] = asyncio.Queue()
 
@@ -172,17 +142,51 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     ctx = ChainContext(user_input)
     ctx.current_task = str(user_input)
     ctx.sse_emitter = emit
+    s = get_settings()
+    user_max = int(max_steps or 6)
+    hard_limit = int(getattr(s, "chain_hard_limit", 20))
+    ctx.max_step = min(user_max, hard_limit)
+    ctx.tenant_id = tenant_id
+
+    # 若用户请求的步数超过系统硬上限：不执行链路，仅推送最终提示并结束
+    if user_max > hard_limit:
+        final_text = f"请求的最大步数（{user_max}）超过系统硬上限（{hard_limit}），请调小 max_steps 或联系管理员提升上限。"
+        emit("final", final_text)
+        q.put_nowait("__END__")
+        # 进入统一队列消费，向客户端发送上述两帧后结束
+        while True:
+            frame = await q.get()
+            if frame == "__END__":
+                break
+            yield frame
+        return
 
     async def _run() -> None:
         cur = RootHandler()
-        while cur is not None:
+        steps = 0
+        limit_reached = False
+        while cur is not None and steps < ctx.max_step:
+            steps += 1
             ctx_local = await cur.handle(ctx)
             nxt = cur.next(ctx_local)
             if nxt is None:
                 break
             cur = nxt
+        # 达到最大步数：标记上限触发，最终文本由兜底逻辑统一提示
+        if cur is not None and steps >= ctx.max_step:
+            limit_reached = True
         # 链路完成后统一推送最终文本事件，并写入队列结束标记
         final_text = str(getattr(ctx, "fact_msg", ""))
+        
+        # 最终文本兜底：
+        # - 若无有效结果（空串/None），根据是否触发上限给出不同的友好提示
+        _ft = final_text.strip().lower()
+        if (not final_text) or (_ft == "") or (_ft == "none"):
+            final_text = (
+                f"已达到最大步数限制（{ctx.max_step}），请缩小任务或提升上限。"
+                if limit_reached
+                else "本次执行未产生有效结果，请重试或调整输入。"
+            )
         emit("final", final_text)
         q.put_nowait("__END__")
 
@@ -192,3 +196,31 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
         if frame == "__END__":
             break
         yield frame
+
+
+async def run_chain(user_input: Any, *, max_steps: int = 6) -> ChainContext:
+    """（已弃用）
+
+        入口执行器
+    初始化 `ChainContext`，设定任务与步数上限，启动根节点并按节点自决策进行跳转。
+    当校验通过或达到步数上限时结束。
+    """
+    from .steps.root_handler import RootHandler
+
+    ctx = ChainContext(user_input)
+    ctx.current_task = str(user_input)
+    s = get_settings()
+    hard_limit = int(getattr(s, "chain_hard_limit", 20))
+    eff = min(int(max_steps or 6), hard_limit)
+    ctx.max_step = eff
+    root = RootHandler()
+    steps = 0
+    cur: Optional[Handler] = root
+    while cur is not None and steps < eff:
+        steps += 1
+        ctx = await cur.handle(ctx)
+        nxt = cur.next(ctx)
+        if nxt is None:
+            break
+        cur = nxt
+    return ctx
