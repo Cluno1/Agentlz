@@ -122,5 +122,42 @@ CREATE TABLE `user_doc_permission` (
     INDEX `idx_perm_doc` (`doc_id`) USING BTREE -- 按文档过滤加速
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
+DROP TABLE IF EXISTS `agent`;
+CREATE TABLE `agent` (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Agent名称',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `created_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建的用户ID',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `updated_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '更新的用户ID',
+  `disabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT '是否禁用：0否 1是',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_agent_disabled`(`disabled`) USING BTREE,
+  INDEX `idx_agent_created_at`(`created_at`) USING BTREE,
+  INDEX `fk_agent_created_by`(`created_by_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
+DROP TABLE IF EXISTS `agent_mcp`;
+CREATE TABLE `agent_mcp` (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+  `mcp_agent_id` bigint(20) NOT NULL COMMENT 'MCP Agent ID',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_agent_mcp` (`agent_id`, `mcp_agent_id`) USING BTREE,
+  INDEX `idx_agent_mcp_agent` (`agent_id`) USING BTREE,
+  INDEX `idx_agent_mcp_mcp` (`mcp_agent_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+DROP TABLE IF EXISTS `agent_document`;
+CREATE TABLE `agent_document` (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+  `document_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文档ID',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_agent_document` (`agent_id`, `document_id`) USING BTREE,
+  INDEX `idx_agent_document_agent` (`agent_id`) USING BTREE,
+  INDEX `idx_agent_document_document` (`document_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 SET FOREIGN_KEY_CHECKS = 1;
