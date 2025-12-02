@@ -97,6 +97,13 @@ class Settings(BaseSettings):
         default="tenant", env="TENANT_TABLE_NAME")
     user_doc_permission_table_name: str = Field(
         default="user_doc_permission", env="USER_DOC_PERMISSION_TABLE_NAME")
+    agent_table_name: str = Field(default="agent", env="AGENT_TABLE_NAME")
+    agent_mcp_table_name: str = Field(
+        default="agent_mcp", env="AGENT_MCP_TABLE_NAME")
+    agent_document_table_name: str = Field(
+        default="agent_document", env="AGENT_DOCUMENT_TABLE_NAME")
+
+
 
     # MCP 混合检索参数（语义/可信度融合）
     # alpha：语义权重；theta：语义门槛；N：语义召回 Top-N；k：最终返回 Top-k

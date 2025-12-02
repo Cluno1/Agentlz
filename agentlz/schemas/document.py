@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Optional
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -11,6 +12,16 @@ class DocumentItem(BaseModel):
     upload_time: Optional[str] = None
     title: str
     content: Optional[str] = None
+
+class DocumentQuery(BaseModel):
+    status: Optional[str] = None
+    upload_time_start: Optional[datetime] = None
+    upload_time_end: Optional[datetime] = None
+    title: Optional[str] = None
+    disabled: Optional[bool] = None
+    tags: Optional[str] = None
+    description: Optional[str] = None
+    uploaded_by_user_id: Optional[int] = None
 
 #  文档更新参数
 class DocumentUpdate(BaseModel):

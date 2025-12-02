@@ -39,5 +39,6 @@ CREATE POLICY tenant_isolate ON chunk_embeddings
 --  创建 pgvector 的近似向量检索索引，类型为 ivfflat ，距离度量为欧氏距离（L2）。
 --  lists = 100 控制索引的倒排列表数量，影响速度/召回率的权衡；查询时可用 SET ivfflat.probes = N; 调整检索精度（如 10、20、50）。 
 
+
 CREATE INDEX IF NOT EXISTS idx_ce_embedding_l2
   ON chunk_embeddings USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);

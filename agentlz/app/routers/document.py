@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query, File, Form, UploadFile
 from fastapi.responses import Response
 from agentlz.core.logger import setup_logging
-from agentlz.schemas.document import DocumentUpdate, DocumentUpload
+from agentlz.schemas.document import DocumentUpdate, DocumentUpload, DocumentQuery
 from agentlz.schemas.responses import Result
 from agentlz.services import document_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
@@ -63,18 +63,19 @@ def list_documents(
     per_page: int = Query(10, ge=1, le=100, description="每页条数"),
     sort: str = Query("id", description="排序字段"),
     order: str = Query("DESC", regex="^(ASC|DESC)$", description="排序方向"),
-    q: Optional[str] = Query(None, description="搜索关键词"),
-    type: str = Query("self", regex="^(system|self|tenant)$", description="文档类型")
+    type: str = Query("self", regex="^(system|self|tenant)$", description="文档类型"),
+    filters: DocumentQuery = Depends()
 ):
     """分页查询文档列表（支持多类型查询）"""
-    logger.info(f"list_documents: page={page}, per_page={per_page}, sort={sort}, order={order}, q={q}, type={type}")
+    fdict = filters.model_dump(exclude_none=True)
+    logger.info(f"list_documents: page={page}, per_page={per_page}, sort={sort}, order={order}, type={type}, filters={fdict}")
     tenant_id = require_tenant_id(request)
     rows, total = document_service.list_documents_service(
         page=page,
         per_page=per_page,
         sort=sort,
         order=order,
-        q=q,
+        filters=fdict,
         type=type,
         tenant_id=tenant_id,
         claims=claims

@@ -28,17 +28,19 @@ def list_agent_mcp(*, agent_id: int, table_name: str) -> List[Dict[str, Any]]:
         f"""
         SELECT id, agent_id, mcp_agent_id, created_at
         FROM `{table_name}` WHERE agent_id = :agent_id
-        ORDER BY id DESC
+        ORDER BY id DESC -- 按主键倒序，最近关联在前
         """
     )
     engine = get_mysql_engine()
     with engine.connect() as conn:
+        # 参数化查询，避免注入
         rows = conn.execute(sql, {"agent_id": agent_id}).mappings().all()
     return [dict(r) for r in rows]
 
 
 def get_agent_mcp_by_id(*, rel_id: int, table_name: str) -> Optional[Dict[str, Any]]:
     """按主键查询单条关联记录。"""
+    # 精确匹配主键
     sql = text(
         f"""
         SELECT id, agent_id, mcp_agent_id, created_at
@@ -53,6 +55,7 @@ def get_agent_mcp_by_id(*, rel_id: int, table_name: str) -> Optional[Dict[str, A
 
 def get_agent_mcp_by_pair(*, agent_id: int, mcp_agent_id: int, table_name: str) -> Optional[Dict[str, Any]]:
     """按唯一键 `(agent_id, mcp_agent_id)` 查询关联记录。"""
+    # 使用唯一键对进行查询
     sql = text(
         f"""
         SELECT id, agent_id, mcp_agent_id, created_at
@@ -71,6 +74,7 @@ def create_agent_mcp(
     table_name: str,
 ) -> Dict[str, Any]:
     """创建关联并回读插入后的完整记录。"""
+    # 记录创建时间（UTC）
     now = datetime.now(timezone.utc)
     sql = text(
         f"""
@@ -79,6 +83,7 @@ def create_agent_mcp(
         VALUES (:agent_id, :mcp_agent_id, :created_at)
         """
     )
+    # 参数化插入
     params = {
         "agent_id": payload.get("agent_id"),
         "mcp_agent_id": payload.get("mcp_agent_id"),
@@ -86,6 +91,7 @@ def create_agent_mcp(
     }
     engine = get_mysql_engine()
     with engine.begin() as conn:
+        # 事务插入并读取新记录
         result = conn.execute(sql, params)
         new_id = result.lastrowid
         ret = conn.execute(
@@ -99,6 +105,7 @@ def create_agent_mcp(
 
 def delete_agent_mcp(*, rel_id: int, table_name: str) -> bool:
     """按主键删除关联记录。"""
+    # 主键删除
     sql = text(f"DELETE FROM `{table_name}` WHERE id = :id")
     engine = get_mysql_engine()
     with engine.begin() as conn:
@@ -108,6 +115,7 @@ def delete_agent_mcp(*, rel_id: int, table_name: str) -> bool:
 
 def delete_agent_mcp_by_pair(*, agent_id: int, mcp_agent_id: int, table_name: str) -> bool:
     """按唯一键 `(agent_id, mcp_agent_id)` 删除关联记录。"""
+    # 唯一键对删除
     sql = text(f"DELETE FROM `{table_name}` WHERE agent_id = :agent_id AND mcp_agent_id = :mcp_agent_id")
     engine = get_mysql_engine()
     with engine.begin() as conn:
