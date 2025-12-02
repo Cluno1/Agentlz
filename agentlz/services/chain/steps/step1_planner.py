@@ -25,6 +25,7 @@ class PlannerHandler(Handler):
     async def handle(self, ctx: ChainContext) -> ChainContext:
         """生成并写入计划，失败时记录错误标记"""
         try:
+            logger = setup_logging(get_settings().log_level)
             ctx.plan = await self._run_planner(ctx)
             # 记录成功步骤，输出为结构化计划对象
             ctx.steps.append({"name": "planner", "status": "passed", "output": ctx.plan})

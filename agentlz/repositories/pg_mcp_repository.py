@@ -4,13 +4,15 @@ from sqlalchemy import text
 from contextlib import closing
 from agentlz.core.database import get_pg_engine, get_pg_conn
 
+_MCP_VEC_DIM = 1536
+
 
 def _to_vector_literal(vec: Sequence[float]) -> str:
     """将 Python 向量序列化为 pgvector 字面量，例如 "[0.1,0.2]"。"""
     return "[" + ",".join(str(float(x)) for x in vec) + "]"
 
 
-def _ensure_pg_schema(conn, dim: int) -> None:
+def _ensure_pg_schema(conn) -> None:
     """确保 pgvector 扩展、`mcp_agents_vec` 表与向量索引存在。
 
     - 表字段说明：
@@ -21,7 +23,7 @@ def _ensure_pg_schema(conn, dim: int) -> None:
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         cur.execute(
-            f"CREATE TABLE IF NOT EXISTS mcp_agents_vec (id BIGINT PRIMARY KEY, name TEXT, transport TEXT, command TEXT, description TEXT, category TEXT, embedding VECTOR({dim}), trust_score REAL DEFAULT 0);"
+            f"CREATE TABLE IF NOT EXISTS mcp_agents_vec (id BIGINT PRIMARY KEY, name TEXT, transport TEXT, command TEXT, description TEXT, category TEXT, embedding VECTOR({_MCP_VEC_DIM}), trust_score REAL DEFAULT 0);"
         )
         try:
             cur.execute(
@@ -41,10 +43,9 @@ def upsert_mcp_agent_vector(agent_id: int, name: str, transport: str, command: s
     - 不处理 `trust_score`（可信度得分），该值由业务层或离线作业更新
     - 若主键存在则进行 UPSERT，更新 `name/transport/command/description/category/embedding`
     """
-    dim = len(embedding) if hasattr(embedding, "__len__") else 512
     v = _to_vector_literal(embedding)
     with closing(get_pg_conn()) as conn:
-        _ensure_pg_schema(conn, dim)
+        _ensure_pg_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO mcp_agents_vec (id, name, transport, command, description, category, embedding) VALUES (%s,%s,%s,%s,%s,%s,%s::vector) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, transport=EXCLUDED.transport, command=EXCLUDED.command, description=EXCLUDED.description, category=EXCLUDED.category, embedding=%s::vector",
@@ -55,11 +56,10 @@ def upsert_mcp_agent_vector(agent_id: int, name: str, transport: str, command: s
 
 def search_ids_by_vector(embedding: Sequence[float], k: int = 5) -> List[int]:
     """按语义相似度检索 Top‑k 的 MCP ID 列表（不融合可信度）。"""
-    dim = len(embedding) if hasattr(embedding, "__len__") else 512
     v = _to_vector_literal(embedding)
     ids: List[int] = []
     with closing(get_pg_conn()) as conn:
-        _ensure_pg_schema(conn, dim)
+        _ensure_pg_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id FROM mcp_agents_vec ORDER BY embedding <-> %s::vector LIMIT %s",

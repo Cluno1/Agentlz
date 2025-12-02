@@ -74,14 +74,19 @@ class ExecutorHandler(Handler):
         client = None
         try:
             client = MultiServerMCPClient(mcp_dict)
-        except Exception:
+        except Exception as e:
             client = None
+            self.send_sse(ctx, "executor.error", {"stage": "client_init", "message": str(e)})
+            setup_logging(get_settings().log_level).error(f"executor.error stage=client_init err={e}")
         tools = []
         if client is not None:
             try:
                 tools = await client.get_tools()
-            except Exception:
+            except Exception as e:
                 tools = []
+                self.send_sse(ctx, "executor.error", {"stage": "get_tools", "message": str(e)})
+                setup_logging(get_settings().log_level).error(f"executor.error stage=get_tools err={e}")
+
         settings = get_settings()
         system_prompt = EXECUTOR_PROMPT
         chain_pref = ", ".join(getattr(plan, "execution_chain", []) or [])
@@ -127,6 +132,11 @@ class ExecutorHandler(Handler):
         else:
             ctx.tool_calls = []
             ctx.fact_msg = str(final_text)
+
+        try:
+            self.send_sse(ctx, "executor.summary", ctx.fact_msg)
+        except Exception:
+            pass
 
 
 class _ToolLogHandler(BaseCallbackHandler):

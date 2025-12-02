@@ -8,6 +8,7 @@ from agentlz.config.settings import get_settings
 from agentlz.schemas.events import EventEnvelope
 from agentlz.schemas.workflow import ToolCall
 from .handler import Handler
+from agentlz.core.logger import setup_logging
 
 
 class ChainContext:
@@ -131,10 +132,13 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     import asyncio
     q: asyncio.Queue[str] = asyncio.Queue()
 
+    logger = setup_logging(get_settings().log_level)
+
     def emit(evt: str, payload: Any) -> None:
         # 步骤层调用的统一发射器：
         # - 将事件转为 SSE 帧文本后写入队列，供 HTTP 层逐帧发送
         try:
+            logger.info(f"SSE send evt={evt}")
             q.put_nowait(_sse(evt, payload))
         except Exception:
             pass

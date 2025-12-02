@@ -6,6 +6,7 @@ from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.config.settings import get_settings
+from agentlz.core.logger import setup_logging
 from agentlz.prompts.check.check import CHECK_SYSTEM_PROMPT
 import json
 from agentlz.schemas.check import CheckInput, CheckOutput
@@ -106,4 +107,4 @@ class CheckHandler(Handler):
         # 将三段信息以 JSON/文本整合注入到提示中
         msgs = prompt.format_messages(objectMsg=object_msg, factMsg=fact_msg, toolCallsJson=json.dumps(calls))
         resp = await agent.ainvoke({"messages": msgs})
-        return resp["structured_response"] if isinstance(resp, dict) and resp.get("structured_response") is not None else CheckOutput.model_validate_json(resp.get("messages", [{}])[-1].get("content", "") if isinstance(resp, dict) else str(resp))
+        return resp["structured_response"]

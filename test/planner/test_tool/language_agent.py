@@ -62,7 +62,7 @@ language_stats = {
 
 @mcp.tool()
 async def language(num: str) -> str:
-    """将数字结果转化为有趣双关的描述 - 添加追踪"""
+    """将数字结果转化为50到100字的有趣双关的描述 - 添加追踪"""
     language_stats["total_requests"] = _increment_counter("language_calls")
     language_stats["last_input"] = num
     print(f" [LanguageAgent] 开始语言处理，输入: {num}")
@@ -79,7 +79,7 @@ async def language(num: str) -> str:
         prompt = f"""
           请将这些数字结果转化为一段有趣的话: {num}
           要求:
-          1. 创作一个简短有趣的故事
+          1. 创作一个50字左右的双关的简短有趣的故事
           2. 包含数字的变换过程
           3. 结尾要有寓意或感悟
           4. 语言生动有趣

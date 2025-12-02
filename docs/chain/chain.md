@@ -97,6 +97,7 @@ graph TD
 
 ## 日志与指标
 - 统一使用 `agentlz/core/logger.py`：结构化日志，包含 `request_id/tenant_id/agent_id/latency_ms`。
+- 在各步骤发送 SSE 时记录事件名日志（`planner/executor/check`），统一发射器 `emit` 中也记录每个事件的 `evt`。
 - 执行器通过回调拦截（`BaseCallbackHandler`）记录真实 I/O，作为权威数据源；启用 `response_format=ExecutorTrace` 仅作为兜底结构化返回。
 - 指标建议：
   - `planner_calls_total`、`planner_errors_total`、`planner_latency_ms`
@@ -158,6 +159,8 @@ from agentlz.services.chain.chain_service import run_chain
   - `planner.plan`：`WorkflowPlan`，来自 `ctx.plan`
   - `call.start`：工具调用开始事件，来自执行器工具回调
   - `call.end`：工具调用结束事件，状态统一为 `success`
+  - `executor.summary`：执行器完成后推送的摘要文本（`ctx.fact_msg`）
+  - `executor.error`：执行器错误事件，载荷包含 `{ stage, message }`
   - `check.summary`：`CheckOutput`，来自 `ctx.check_result`
   - `final`：最终文本，来自 `ctx.fact_msg`
 - 帧格式：每帧三行（`event/id/data`）+ 空行，`data` 为 `EventEnvelope` JSON（`agentlz/schemas/events.py:4-10`）
@@ -181,6 +184,14 @@ es.addEventListener('call.end', e => {
 es.addEventListener('call.start', e => {
   const env = JSON.parse(e.data);
   appendToolCard(env.payload);
+});
+es.addEventListener('executor.summary', e => {
+  const env = JSON.parse(e.data);
+  renderExecutorSummary(env.payload);
+});
+es.addEventListener('executor.error', e => {
+  const env = JSON.parse(e.data);
+  renderExecutorError(env.payload);
 });
 es.addEventListener('check.summary', e => {
   const env = JSON.parse(e.data);
