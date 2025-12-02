@@ -1,0 +1,152 @@
+{
+  "paths": {
+    "/v1/agents": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "List agents",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" },
+          { "name": "page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "per_page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 } },
+          { "name": "sort", "in": "query", "required": false, "schema": { "type": "string", "default": "id" } },
+          { "name": "order", "in": "query", "required": false, "schema": { "type": "string", "enum": ["ASC", "DESC"], "default": "DESC" } },
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "nullable": true } },
+          { "name": "type", "in": "query", "required": false, "schema": { "type": "string", "enum": ["self", "tenant"], "default": "self" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } }
+          },
+          "401": { "description": "Unauthorized" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      },
+      "post": {
+        "tags": ["agents"],
+        "summary": "Create agent",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentCreate" } } }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+          "401": { "description": "Unauthorized" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      }
+    },
+    "/v1/agents/{agent_id}": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "Get agent",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" },
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+          "404": { "description": "Not Found" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      },
+      "put": {
+        "tags": ["agents"],
+        "summary": "Update agent",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" },
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentUpdate" } } }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+          "404": { "description": "Not Found" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      },
+      "delete": {
+        "tags": ["agents"],
+        "summary": "Delete agent",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" },
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+          "404": { "description": "Not Found" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      }
+    },
+    "/v1/agents/{agent_id}/api": {
+      "put": {
+        "tags": ["agents"],
+        "summary": "Update agent API key",
+        "parameters": [
+          { "name": "X-Tenant-ID", "in": "header", "required": true, "schema": { "type": "string" }, "description": "租户ID" },
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentApiUpdate" } } }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+          "404": { "description": "Not Found" }
+        },
+        "security": [{ "bearerAuth": [] }]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Result": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "default": true },
+          "code": { "type": "integer", "default": 0 },
+          "message": { "type": "string", "default": "ok" },
+          "data": { "nullable": true }
+        },
+        "required": ["success", "code", "message"]
+      },
+      "AgentCreate": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "disabled": { "type": "boolean", "nullable": true },
+          "mcp_agent_ids": { "type": "array", "items": { "type": "integer" }, "nullable": true },
+          "document_ids": { "type": "array", "items": { "type": "string" }, "nullable": true }
+        },
+        "required": ["name"]
+      },
+      "AgentUpdate": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "nullable": true },
+          "description": { "type": "string", "nullable": true },
+          "disabled": { "type": "boolean", "nullable": true },
+          "mcp_agent_ids": { "type": "array", "items": { "type": "integer" }, "nullable": true },
+          "document_ids": { "type": "array", "items": { "type": "string" }, "nullable": true }
+        }
+      },
+      "AgentApiUpdate": {
+        "type": "object",
+        "properties": {
+          "api_name": { "type": "string", "nullable": true },
+          "api_key": { "type": "string", "nullable": true }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}
