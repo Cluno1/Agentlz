@@ -26,12 +26,12 @@ MODEL_NAME="deepseek-chat"
 LOG_LEVEL="INFO"
 
 # MySQL 连接配置（用于 MCP 仓储查询）
-DB_HOST="117.72.162.89"
-DB_PORT="13306"
-DB_USER="root"
-DB_PASSWORD="agentdb123456"
-# 注意：仓库 SQL 使用的是 agentlz 数据库
-DB_NAME="agentlz"
+DB_HOST="localhost"
+DB_PORT="3306"
+DB_USER="user"
+DB_PASSWORD="password"
+# 注意：示例不包含真实数据库信息
+DB_NAME="db"
 ```
 - 需先生成计划：`python -m test.planner.generate_plan`
 
