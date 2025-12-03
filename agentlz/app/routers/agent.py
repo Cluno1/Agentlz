@@ -59,12 +59,17 @@ def get_agent(agent_id: int, request: Request, claims: Dict[str, Any] = Depends(
 
 
 @router.post("/agents", response_model=Result)
-def create_agent(payload: AgentCreate, request: Request, claims: Dict[str, Any] = Depends(require_auth)):
-    tenant_id = require_tenant_id(request)
+def create_agent(
+    payload: AgentCreate,
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth),
+    type: str = Query("self", regex="^(self|tenant)$"),
+):
     user_id = claims.get("sub") if isinstance(claims, dict) else None
+    tenant_id = "default" if type == "self" else require_tenant_id(request)
     payload_data = payload.model_dump(exclude_none=True)
     logger.info(
-        f"request {request.method} {request.url.path} tenant_id={tenant_id} user_id={user_id} payload={payload_data}"
+        f"request {request.method} {request.url.path} type={type} tenant_id={tenant_id} user_id={user_id} payload={payload_data}"
     )
     row = agent_service.create_agent_service(payload=payload_data, tenant_id=tenant_id, claims=claims)
     return Result.ok(row)

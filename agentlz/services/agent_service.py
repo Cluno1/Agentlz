@@ -50,7 +50,9 @@ def _check_agent_permission(agent: Dict[str, Any], current_user_id: int, tenant_
     user_info = user_repo.get_user_by_id(user_id=current_user_id, tenant_id=tenant_id, table_name=user_table)
     if not user_info:
         return False
-    if str(user_info.get("tenant_id") or "") == str(agent.get("tenant_id") or "") and str(agent.get("tenant_id") or "") != "default" and str(user_info.get("role") or "") == "admin":
+    if str(user_info.get("role") or "") == "admin" and str(agent.get("tenant_id") or "") != "default" and str(user_info.get("tenant_id") or "") == str(agent.get("tenant_id") or ""):
+        return True
+    if str(user_info.get("role") or "") == "user":
         engine = get_mysql_engine()
         with engine.connect() as conn:
             row = conn.execute(
@@ -59,7 +61,7 @@ def _check_agent_permission(agent: Dict[str, Any], current_user_id: int, tenant_
                 ),
                 {"uid": int(current_user_id), "aid": int(agent.get("id"))},
             ).mappings().first()
-            if row and str(row.get("perm") or "") in ("admin", "read", "write"):
+            if row and str(row.get("perm") or "") in ("admin", "write"):
                 return True
     return False
 
@@ -109,10 +111,22 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
 
 
 def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    更新智能体基本信息 任何 tenant_id 都可以
+    - 创建者直接允许。
+    - 管理员：当用户租户等于 agent 租户，且该租户不为 default 时允许。
+    - 普通用户：查询 user_agent_permission ，若权限为 admin 或 write 允许。
+    - 其他返回不允许。
+    :param agent_id: 智能体ID
+    :param payload: 更新 payload
+    :param tenant_id: 租户ID
+    :param claims: 认证信息
+    :return: 更新后的智能体信息
+    """
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id(agent_id=agent_id, tenant_id=tenant_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
@@ -160,7 +174,7 @@ def update_agent_api_keys_service(*, agent_id: int, api_name: Optional[str], api
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id(agent_id=agent_id, tenant_id=tenant_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
@@ -173,7 +187,7 @@ def delete_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id(agent_id=agent_id, tenant_id=tenant_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
     if not row:
         return False
     if not _check_agent_permission(row, uid, tenant_id):
@@ -245,7 +259,7 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id(agent_id=agent_id, tenant_id=tenant_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
