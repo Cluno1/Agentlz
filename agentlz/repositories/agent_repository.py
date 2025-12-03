@@ -97,7 +97,13 @@ def list_agents(
 
 
 def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
-    """按主键与租户查询单条 agent 记录。"""
+    """
+    按主键与租户查询单条 agent 记录。
+    :param agent_id: 智能体ID
+    :param tenant_id: 租户ID
+    :param table_name: 表名
+    :return: 智能体记录
+    """
     # 精确匹配主键 + 租户实现隔离
     sql = text(
         f"""
@@ -108,6 +114,19 @@ def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Option
     engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": agent_id, "tenant_id": tenant_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def get_agent_by_id_any_tenant(*, agent_id: int, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, name, description, api_name, api_key, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        FROM `{table_name}` WHERE id = :id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"id": agent_id}).mappings().first()
     return dict(row) if row else None
 
 
