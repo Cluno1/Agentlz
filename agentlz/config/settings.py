@@ -83,8 +83,12 @@ class Settings(BaseSettings):
     cors_allow_headers: list[str] = Field(
         default=["*"], env="CORS_ALLOW_HEADERS")
 
+   
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8")
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="allow",
+    )
     # 配置HuggingFace 中文句向量嵌入模型
     hf_embedding_model: str = Field(
         default="BAAI/bge-small-zh-v1.5", env="HF_EMBEDDING_MODEL")
