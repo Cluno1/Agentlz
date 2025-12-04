@@ -83,8 +83,12 @@ class Settings(BaseSettings):
     cors_allow_headers: list[str] = Field(
         default=["*"], env="CORS_ALLOW_HEADERS")
 
+   
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8")
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="allow",
+    )
     # 配置HuggingFace 中文句向量嵌入模型
     hf_embedding_model: str = Field(
         default="BAAI/bge-small-zh-v1.5", env="HF_EMBEDDING_MODEL")
@@ -97,6 +101,13 @@ class Settings(BaseSettings):
         default="tenant", env="TENANT_TABLE_NAME")
     user_doc_permission_table_name: str = Field(
         default="user_doc_permission", env="USER_DOC_PERMISSION_TABLE_NAME")
+    agent_table_name: str = Field(default="agent", env="AGENT_TABLE_NAME")
+    agent_mcp_table_name: str = Field(
+        default="agent_mcp", env="AGENT_MCP_TABLE_NAME")
+    agent_document_table_name: str = Field(
+        default="agent_document", env="AGENT_DOCUMENT_TABLE_NAME")
+
+
 
     # MCP 混合检索参数（语义/可信度融合）
     # alpha：语义权重；theta：语义门槛；N：语义召回 Top-N；k：最终返回 Top-k

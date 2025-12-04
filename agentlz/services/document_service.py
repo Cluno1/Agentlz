@@ -85,6 +85,7 @@ def _list_self_documents(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]],
     user_id: int,
     table_name: str,
 ) -> Tuple[list[Dict[str, Any]], int]:
@@ -97,6 +98,7 @@ def _list_self_documents(
         sort=sort,
         order=order,
         q=q,
+        filters=filters,
         user_id=user_id,
         table_name=table_name,
         user_table_name=user_table_name,
@@ -112,6 +114,7 @@ def _list_tenant_documents_with_permission(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]],
     user_id: int,
     tenant_id: str,
     table_name: str,
@@ -126,6 +129,7 @@ def _list_tenant_documents_with_permission(
         sort=sort,
         order=order,
         q=q,
+        filters=filters,
         user_id=user_id,
         tenant_id=tenant_id,
         table_name=table_name,
@@ -502,7 +506,7 @@ def get_download_payload_service(*, doc_id: str, tenant_id: str, claims: Optiona
 
 
 def list_documents_service(
-    *, page: int, per_page: int, sort: str, order: str, q: Optional[str], type: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None
+    *, page: int, per_page: int, sort: str, order: str, filters: Optional[Dict[str, Any]], type: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None
 ) -> Tuple[list[Dict[str, Any]], int]:
     """分页查询文档列表（按租户隔离，支持模糊搜索与排序）。
 
@@ -544,7 +548,8 @@ def list_documents_service(
             per_page=per_page,
             sort=sort,
             order=order,
-            q=q,
+            q=None,
+            filters=filters,
             tenant_id="system",
             table_name=table_name,
             user_table_name=user_table_name,
@@ -558,7 +563,8 @@ def list_documents_service(
             per_page=per_page,
             sort=sort,
             order=order,
-            q=q,
+            q=None,
+            filters=filters,
             user_id=current_user_id,
             table_name=table_name,
         )
@@ -586,7 +592,8 @@ def list_documents_service(
                 per_page=per_page,
                 sort=sort,
                 order=order,
-                q=q,
+                q=None,
+                filters=filters,
                 tenant_id=user_tenant_id,
                 table_name=table_name,
                 user_table_name=user_table_name,
@@ -599,7 +606,8 @@ def list_documents_service(
                 per_page=per_page,
                 sort=sort,
                 order=order,
-                q=q,
+                q=None,
+                filters=filters,
                 user_id=current_user_id,
                 tenant_id=user_tenant_id,
                 table_name=table_name,

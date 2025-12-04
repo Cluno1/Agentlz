@@ -46,6 +46,45 @@ def _sanitize_sort(sort_field: str) -> str:
     return SORT_MAPPING.get(sort_field, "id")
 
 
+def _apply_filters(where: List[str], params: Dict[str, Any], filters: Optional[Dict[str, Any]], prefix: str = "") -> None:
+    """应用查询过滤条件（支持租户隔离）"""
+    if not filters:
+        return
+    p = prefix
+    if filters.get("status") is not None:
+        where.append(f"{p}status = :status")
+        params["status"] = filters.get("status")
+    if filters.get("upload_time_start") is not None:
+        where.append(f"{p}upload_time >= :upload_time_start")
+        params["upload_time_start"] = filters.get("upload_time_start")
+    if filters.get("upload_time_end") is not None:
+        where.append(f"{p}upload_time <= :upload_time_end")
+        params["upload_time_end"] = filters.get("upload_time_end")
+    title = filters.get("title")
+    if title:
+        where.append(f"{p}title LIKE :title")
+        params["title"] = f"%{title}%"
+    if filters.get("disabled") is not None:
+        val = filters.get("disabled")
+        params["disabled"] = 1 if bool(val) else 0
+        where.append(f"{p}disabled = :disabled")
+    t = filters.get("type")
+    if t:
+        where.append(f"{p}type = :type")
+        params["type"] = t
+    tags = filters.get("tags")
+    if tags:
+        where.append(f"{p}tags LIKE :tags")
+        params["tags"] = f"%{tags}%"
+    desc = filters.get("description")
+    if desc:
+        where.append(f"{p}description LIKE :description")
+        params["description"] = f"%{desc}%"
+    if filters.get("uploaded_by_user_id") is not None:
+        where.append(f"{p}uploaded_by_user_id = :uploaded_by_user_id")
+        params["uploaded_by_user_id"] = filters.get("uploaded_by_user_id")
+
+
 def list_documents(
     *,
     page: int,
@@ -53,6 +92,7 @@ def list_documents(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]] = None,
     tenant_id: str,
     table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
@@ -68,9 +108,9 @@ def list_documents(
     where = ["tenant_id = :tenant_id"]
     params: Dict[str, Any] = {"tenant_id": tenant_id}
     if q:
-        # 对标题与内容做模糊匹配；注意 longtext LIKE 性能，生产可考虑全文索引
-        where.append("(title LIKE :q OR content LIKE :q)")
-        params["q"] = f"%{q}%"
+        where.append("title LIKE :title")
+        params["title"] = f"%{q}%"
+    _apply_filters(where, params, filters)
     where_sql = "WHERE " + " AND ".join(where)
 
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
@@ -363,6 +403,7 @@ def list_documents_with_names(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]] = None,
     tenant_id: str,
     table_name: str,
     user_table_name: str,
@@ -391,8 +432,9 @@ def list_documents_with_names(
     where = ["d.tenant_id = :tenant_id"]
     params: Dict[str, Any] = {"tenant_id": tenant_id}
     if q:
-        where.append("(d.title LIKE :q OR d.content LIKE :q)")
-        params["q"] = f"%{q}%"
+        where.append("d.title LIKE :title")
+        params["title"] = f"%{q}%"
+    _apply_filters(where, params, filters, prefix="d.")
     where_sql = "WHERE " + " AND ".join(where)
 
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` d {where_sql}")
@@ -428,6 +470,7 @@ def list_self_documents_with_names(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]] = None,
     user_id: int,
     table_name: str,
     user_table_name: str,
@@ -456,8 +499,9 @@ def list_self_documents_with_names(
     where = ["d.tenant_id = :tenant_id", "d.uploaded_by_user_id = :user_id"]
     params: Dict[str, Any] = {"tenant_id": "default", "user_id": user_id}
     if q:
-        where.append("(d.title LIKE :q OR d.content LIKE :q)")
-        params["q"] = f"%{q}%"
+        where.append("d.title LIKE :title")
+        params["title"] = f"%{q}%"
+    _apply_filters(where, params, filters, prefix="d.")
     where_sql = "WHERE " + " AND ".join(where)
 
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` d {where_sql}")
@@ -493,6 +537,7 @@ def list_tenant_documents_with_permission_with_names(
     sort: str,
     order: str,
     q: Optional[str],
+    filters: Optional[Dict[str, Any]] = None,
     user_id: int,
     tenant_id: str,
     table_name: str,
@@ -500,6 +545,24 @@ def list_tenant_documents_with_permission_with_names(
     user_table_name: str,
     tenant_table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
+    '''
+    获取租户下用户有读取权限的文档列表（按租户隔离）
+    参数
+    - page: 页码
+    - per_page: 每页数量
+    - sort: 排序字段
+    - order: 排序方向（ASC/DESC）
+    - q: 搜索查询字符串
+    - user_id: 用户ID
+    - tenant_id: 租户ID
+    - table_name: 文档表名
+    - perm_table_name: 用户文档权限表名
+    - user_table_name: 用户表名
+    - tenant_table_name: 租户表名
+    返回
+    - 文档列表（包含租户名称和上传用户名）
+    - 总文档数
+    '''
     order_dir = "ASC" if order.upper() == "ASC" else "DESC"
     sort_col = _sanitize_sort(sort)
     offset = (page - 1) * per_page
@@ -507,8 +570,9 @@ def list_tenant_documents_with_permission_with_names(
     where = ["d.tenant_id = :tenant_id"]
     params: Dict[str, Any] = {"tenant_id": tenant_id, "user_id": user_id}
     if q:
-        where.append("(d.title LIKE :q OR d.content LIKE :q)")
-        params["q"] = f"%{q}%"
+        where.append("d.title LIKE :title")
+        params["title"] = f"%{q}%"
+    _apply_filters(where, params, filters, prefix="d.")
     where_sql = "WHERE " + " AND ".join(where)
 
     count_sql = text(

@@ -7,6 +7,7 @@ from agentlz.config.settings import get_settings
 from agentlz.app.routers.users import router as users_router
 from agentlz.app.routers.auth import router as auth_router
 from agentlz.app.routers.document import router as document_router
+from agentlz.app.routers.agent import router as agent_router
 from agentlz.app.routers.chain import router as chain_router
 from agentlz.app.deps.auth_deps import require_auth
 from agentlz.schemas.responses import Result
@@ -58,6 +59,7 @@ app.include_router(auth_router)
 app.include_router(users_router, dependencies=[Depends(require_auth)])
 app.include_router(document_router, dependencies=[Depends(require_auth)])
 app.include_router(chain_router, dependencies=[Depends(require_auth)])
+app.include_router(agent_router, dependencies=[Depends(require_auth)])
 
 @app.exception_handler(HTTPException)
 async def _http_exc_handler(request: Request, exc: HTTPException):

@@ -144,6 +144,9 @@ DROP TABLE IF EXISTS `agent`;
 CREATE TABLE `agent` (
   `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Agent名称',
+  `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '描述',
+  `api_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT 'API名称',
+  `api_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT 'API密钥',
   `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID（多租户隔离）',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建的用户ID',
@@ -163,7 +166,6 @@ CREATE TABLE `agent_mcp` (
   `mcp_agent_id` bigint(20) NOT NULL COMMENT 'MCP Agent ID',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_agent_mcp` (`agent_id`, `mcp_agent_id`) USING BTREE,
   INDEX `idx_agent_mcp_agent` (`agent_id`) USING BTREE,
   INDEX `idx_agent_mcp_mcp` (`mcp_agent_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
@@ -178,5 +180,21 @@ CREATE TABLE `agent_document` (
   UNIQUE INDEX `uk_agent_document` (`agent_id`, `document_id`) USING BTREE,
   INDEX `idx_agent_document_agent` (`agent_id`) USING BTREE,
   INDEX `idx_agent_document_document` (`document_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+-- 会话表 记录agent会话信息
+DROP TABLE IF EXISTS `session`;
+CREATE TABLE `session` (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+  `count` int(11) NOT NULL DEFAULT 0 COMMENT '对话轮次',
+  `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '本会话描述(包含全部轮次)',
+  `meta` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '（预留字段',
+  `meta_input` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '输入元数据',
+  `meta_output` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '输出元数据',
+  `zip` longtext NULL COMMENT '压缩后的会话数据',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_session_agent`(`agent_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 SET FOREIGN_KEY_CHECKS = 1;
