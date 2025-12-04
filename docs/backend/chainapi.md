@@ -7,7 +7,7 @@
 - 认证：在请求头携带 `Authorization: Bearer <token>`
 - 传输：`text/event-stream`（Server-Sent Events，SSE），事件按帧推送
 
-## 1) GET /v1/chain/stream （流式事件）
+## 1) GET /v1/chat （流式事件）
 
 - 说明：根据用户输入触发责任链，实时返回事件帧；每帧包含三行：`event:`、`id:`、`data:`，以空行结尾
 - 头部：
@@ -22,7 +22,7 @@
 curl -N -H "X-Tenant-ID: default" \
      -H "Authorization: Bearer <token>" \
      -H "Accept: text/event-stream" \
-     "http://localhost:8000/v1/chain/stream?user_input=写一个周报&max_steps=10"
+     "http://localhost:8000/v1/chat?user_input=写一个周报&max_steps=10"
 ```
 
 示例事件帧：
@@ -77,7 +77,7 @@ data: {"evt":"final","seq":8,"ts":"2025-11-27T12:35:02Z","trace_id":"<uuid>","sc
 
 ### 前端消费示例
 ```
-const es = new EventSource('/v1/chain/stream?user_input=你的输入');
+const es = new EventSource('/v1/chat?user_input=你的输入');
 
 es.addEventListener('chain.step', e => {
   const env = JSON.parse(e.data);
@@ -112,7 +112,7 @@ es.addEventListener('final', e => {
 ```
 
 ### 设计说明
-- 路由：`agentlz/app/routers/chain.py:10-15`（SSE）
+- 路由：`agentlz/app/routers/chain.py:10-15`（SSE，路径 `/v1/chat`）
 - 生成器：`agentlz/services/chain/chain_service.py`，按 `handle → next` 推进并逐帧输出，最终统一推送 `final` 文本并结束
 - 帧构造：`agentlz/services/chain/chain_service.py:127-155`（`EventEnvelope` JSON + `event/id/data` 文本帧）
 - 事件壳：`agentlz/schemas/events.py:4-10`

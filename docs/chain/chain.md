@@ -57,7 +57,7 @@ graph TD
 
 目录规划：
 - `agentlz/services/chain/chain_service.py`：入口执行器与上下文（`run_chain`、`ChainContext`、`_is_check_passed`）；流式事件生成器（`stream_chain_generator`）
-- `agentlz/app/routers/chain.py`：SSE 路由 `GET /v1/chain/stream?user_input=...`
+- `agentlz/app/routers/chain.py`：SSE 路由 `GET /v1/chat?user_input=...`
 - `agentlz/schemas/events.py`：事件壳 `EventEnvelope`
 - `agentlz/schemas/workflow.py`：工作流模型（`ToolCall`、`ExecutorTrace`）
 - `agentlz/services/chain/handler.py`：节点基类原型
@@ -153,7 +153,7 @@ from agentlz.services.chain.chain_service import run_chain
   - 执行器创建代理时声明 `response_format=ExecutorTrace`，在无回调日志时解析结构化响应作为兜底。
 
 ## 流式事件（SSE）
-- 路由：`GET /v1/chain/stream?user_input=...`（`agentlz/app/routers/chain.py:10-15`）
+- 路由：`GET /v1/chat?user_input=...`（`agentlz/app/routers/chain.py:10-15`）
 - 生成器：`stream_chain_generator`（`agentlz/services/chain/chain_service.py:99-123,176-188`），按节点推进：
   - `chain.step`：阶段名（`planner/executor/check`），来自各步骤显式发送
   - `planner.plan`：`WorkflowPlan`，来自 `ctx.plan`
@@ -167,7 +167,7 @@ from agentlz.services.chain.chain_service import run_chain
 
 ### 前端消费参考
 ```javascript
-const es = new EventSource('/v1/chain/stream?user_input=你的输入');
+const es = new EventSource('/v1/chat?user_input=你的输入');
 es.addEventListener('chain.step', e => {
   const env = JSON.parse(e.data);
   setActiveStep(env.payload);
