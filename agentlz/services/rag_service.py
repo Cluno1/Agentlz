@@ -17,6 +17,8 @@ from agentlz.services import document_service as doc_service
 from agentlz.services import chunk_embeddings_service as emb_service
 from agentlz.repositories import session_repository as sess_repo
 import json
+from agentlz.agents.rag.rag_agent import get_rag_query_agent, rag_build_queries
+from agentlz.schemas.rag import RAGQueryInput, RAGQueryOutput
 
 
 def _tables() -> Dict[str, str]:
@@ -59,6 +61,7 @@ def get_doc_topk_messages(
     *,
     agent_id: int,
     message: str,
+    messages: List[str],
     limit: int = 5,
     distance_metric: str = "euclidean",
     include_vector: bool = False,
@@ -68,6 +71,7 @@ def get_doc_topk_messages(
     参数：
     - agent_id：Agent 主键 ID（上层已确保存在）
     - message：输入消息文本
+    - messages：查询短句列表 优先 使用，为空时 fallback 到 message
     - limit：返回条数上限（全局 Top-K）
     - distance_metric：距离度量方式（euclidean 或 cosine）
     - include_vector：是否返回向量
@@ -75,16 +79,8 @@ def get_doc_topk_messages(
     返回：
     - 列表，每项包含 `chunk_id/doc_id/content/similarity_score`（当 `include_vector=True` 时包含 `embedding`）
     """
-    if not isinstance(message, str) or message.strip() == "":
-        raise HTTPException(status_code=400, detail="message不能为空")
     if int(limit) <= 0:
         limit = 5
-
-    s = get_settings()
-    doc_table = getattr(s, "document_table_name", "document")
-    user_table = getattr(s, "user_table_name", "users")
-    tenant_table = getattr(s, "tenant_table_name", "tenant")
-
     doc_ids_grouped = doc_service.list_agent_related_document_ids_service(agent_id=int(agent_id))
     if not doc_ids_grouped:
         return []
@@ -93,6 +89,7 @@ def get_doc_topk_messages(
         results = emb_service.search_similar_chunks_service(
             tenant_id=str(tid),
             message=message,
+            messages=messages,
             doc_ids=[str(x) for x in did_list],
             distance_metric=distance_metric,
             limit=limit,
@@ -201,17 +198,52 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
     - record_id：记录主键 ID（默认 -1，记录id为0,没有历史纪录）
 
     返回：
-    - 列表，每项包含 `similarity_score/document_id/title/description/meta_https/tags/type/claims`（当 `meta_https/tags` 为 JSON 字符串时解析为对象）
+    - 列表 {"doc": doc_joined,// rag检索文档
+     "history": his_joined, // 当前用户的历史问答记录
+     "message": message, // 用户输入消息
+     "messages": optimized_msgs // rag优化后的查询短句数组
+     }
     """
 
     logger = setup_logging()
     logger.info('进入agent_chat_service服务')
-    rag=get_doc_topk_messages(
-        agent_id=int(agent_id),
-        message=message,
-    )
+    rag = []
+    optimized_msgs: List[str] = []
+    if not isinstance(message, str) or message.strip() == "":
+        rag = []
+    else:
+        try:
+            agent = get_rag_query_agent()
+            rq_inp = RAGQueryInput(message=str(message), max_items=6)
+            resp: Any = agent.invoke(rq_inp.model_dump())
+            if isinstance(resp, dict) and resp.get("structured_response") is not None:
+                sr = resp["structured_response"]
+                try:
+                    optimized_msgs = list(getattr(sr, "messages", []) or [])
+                except Exception:
+                    optimized_msgs = []
+            if not optimized_msgs:
+                try:
+                    _q = RAGQueryInput(message=str(message), max_items=6)
+                    _res = rag_build_queries(_q)
+                    optimized_msgs = list(getattr(_res, "messages", []) or [])
+                except Exception:
+                    optimized_msgs = []
+        except Exception:
+            try:
+                _q = RAGQueryInput(message=str(message), max_items=6)
+                _res = rag_build_queries(_q)
+                optimized_msgs = list(getattr(_res, "messages", []) or [])
+            except Exception:
+                optimized_msgs = []
+        logger.info(f"rag 优化后的查询短句: {optimized_msgs}")
+        rag = get_doc_topk_messages(
+            agent_id=int(agent_id),
+            message=message,
+            messages=optimized_msgs,
+        )
     for x in rag:
-        logger.info(f"rag 得分(越小越相关): {x.get("similarity_score")}")
+        logger.info(f"rag 得分(越小越相关): {x.get('similarity_score')}")
     history=check_session_for_rag(
         record_id=int(record_id),
         limit_input=5,
@@ -250,8 +282,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
         his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")  
     his_joined = "; ".join(his_parts)
     out = {"doc": doc_joined, "history": his_joined, "message": message}
+    out.update(RAGQueryOutput(messages=optimized_msgs or [str(message)]).model_dump())
     logger.info(f"agent_chat_service_summary: {out}")
-    # 已经获取到rag和history，后续可以根据需要进行处理
     return out
-    
 

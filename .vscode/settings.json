@@ -37,6 +37,7 @@
         "keepalive",
         "lastrowid",
         "markitdown",
+        "outp",
         "pgvector",
         "qcloud",
         "rabbitmq",

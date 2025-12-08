@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterator
 from fastapi import HTTPException
 from sqlalchemy import text
 
@@ -12,6 +12,9 @@ from agentlz.repositories import agent_document_repository as doc_rel_repo
 from agentlz.repositories import mcp_repository as mcp_repo
 from agentlz.repositories import document_repository as doc_repo
 from agentlz.services.rag_service import agent_chat_get_rag
+from langchain_core.prompts import ChatPromptTemplate
+from agentlz.core.model_factory import get_model
+from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
@@ -321,19 +324,38 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     return row
     
 
-def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> List[Dict[str, Any]]:
-    """智能体聊天服务（包含 RAG 检索）
-
-    参数：
-    - agent_id：智能体主键 ID（上层已确保存在）
-    - message：用户输入的消息内容
-    - record_id：可选的记录 ID，用于关联聊天记录（默认 -1 表示不关联）
-
-    返回：
-    
-    """
-    out= agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
-
-    # todo: 后续的mcp执行器部分
-    return out
+def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Iterator[str]:
+    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
+    settings = get_settings()
+    llm = get_model(settings=settings, streaming=True)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", RAG_ANSWER_SYSTEM_PROMPT),
+        ("human", "用户问题：{message}\n候选文档：\n{doc}\n历史上下文：\n{history}"),
+    ])
+    if llm is None:
+        def _fallback() -> Iterator[str]:
+            msg = str(out.get("message") or "")
+            doc = str(out.get("doc") or "")
+            content = msg if msg else (doc[:2000] if doc else "模型未配置")
+            yield f"data: {content}\n\n"
+            yield "data: [DONE]\n\n"
+        return _fallback()
+    chain = prompt | llm
+    def _gen() -> Iterator[str]:
+        try:
+            for chunk in chain.stream({
+                "message": str(out.get("message") or ""),
+                "doc": str(out.get("doc") or ""),
+                "history": str(out.get("history") or ""),
+            }):
+                try:
+                    content = getattr(chunk, "content", str(chunk))
+                except Exception:
+                    content = str(chunk)
+                if content:
+                    yield f"data: {content}\n\n"
+        except Exception:
+            yield "data: 服务暂时不可用，请稍后重试\n\n"
+        yield "data: [DONE]\n\n"
+    return _gen()
     

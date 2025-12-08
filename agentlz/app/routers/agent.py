@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
+from fastapi.responses import StreamingResponse
 from agentlz.core.logger import setup_logging
 from agentlz.schemas.responses import Result
 from agentlz.services import agent_service, rag_service
@@ -123,7 +124,7 @@ def delete_agent(agent_id: int, request: Request, claims: Dict[str, Any] = Depen
     return Result.ok({})
 
 
-@router.post("/agent/chat", response_model=Result)
+@router.post("/agent/chat", response_class=StreamingResponse)
 def chat_agent(payload: AgentChatInput, request: Request):
     """
     调用 Agent 进行聊天
@@ -154,16 +155,14 @@ def chat_agent(payload: AgentChatInput, request: Request):
             raise HTTPException(status_code=404, detail="Agent不存在")
         agent_id = int(row.get("id"))
 
-    # 分区服务
-    if payload.type == 1:# 继续已有纪录
+    if payload.type == 1:
         if not payload.record_id:
             raise HTTPException(status_code=400, detail="record_id不能为空")
         rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
-        out = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id))
-    else:# 创建新纪录
-        
-        out = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message)
-    return Result.ok(out)
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id))
+    else:
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message)
+    return StreamingResponse(generator, media_type="text/event-stream")
     
 
 

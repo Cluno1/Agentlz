@@ -48,12 +48,9 @@ def embed_message_service(*, message: str) -> Sequence[float]:
 
     返回值:
         - 向量数组（Sequence[float]），用于相似度搜索或存储
-
-    异常:
-        - ValueError: 当 message 为空或仅包含空白字符时
     """
     if not isinstance(message, str) or message.strip() == "":
-        raise ValueError("message_required")
+       return []
     return _get_embedder().embed_query(message)
 
 
@@ -211,7 +208,7 @@ def search_similar_chunks_service(
         for msg in messages:
             if not isinstance(msg, str) or msg.strip() == "":
                 continue
-            vec = embed_message_service(msg)
+            vec = embed_message_service(message=msg)
             rows = _search_similar(
                 tenant_id=tenant_id,
                 embedding=vec,

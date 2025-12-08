@@ -26,3 +26,12 @@ class RAGRerankInput(BaseModel):
 
 class RAGRerankOutput(BaseModel):
     items: List[RAGDocument] = Field(default_factory=list)
+
+
+class RAGQueryInput(BaseModel):
+    message: str
+    max_items: int = 6
+
+
+class RAGQueryOutput(BaseModel):
+    messages: List[str] = Field(default_factory=list)
