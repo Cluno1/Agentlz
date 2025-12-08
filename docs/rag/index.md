@@ -1,0 +1,2 @@
+
+写一个函数,把用户的message输入向量化agentlz/repositories/chunk_embeddings_repository.py,通过 doc-id去 这里用search_similar_chunks进行相似度查询,但是我需要就是也许输入的doc_ids属于不同tenant_id,这里不要做租户隔离

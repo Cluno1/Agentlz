@@ -106,6 +106,16 @@ class Settings(BaseSettings):
         default="agent_mcp", env="AGENT_MCP_TABLE_NAME")
     agent_document_table_name: str = Field(
         default="agent_document", env="AGENT_DOCUMENT_TABLE_NAME")
+    mcp_agents_table_name: str = Field(
+        default="mcp_agents", env="MCP_AGENTS_TABLE_NAME")
+    user_agent_permission_table_name: str = Field(
+        default="user_agent_permission", env="USER_AGENT_PERMISSION_TABLE_NAME")
+    record_table_name: str = Field(
+        default="record", env="RECORD_TABLE_NAME")
+    session_table_name: str = Field(
+        default="session", env="SESSION_TABLE_NAME")
+    record_session_table_name: str = Field(
+        default="record_session", env="RECORD_SESSION_TABLE_NAME")
 
 
 

@@ -7,13 +7,13 @@ from agentlz.core.logger import setup_logging
 from agentlz.repositories import document_repository as repo
 from agentlz.repositories import user_repository as user_repo
 from agentlz.repositories import user_doc_perm_repository as perm_repo
+from agentlz.repositories import agent_document_repository as agdoc_repo
 from agentlz.schemas.document import DocumentUpload
 
 from agentlz.services.chunk_embeddings_service import create_chunk_embedding_service, split_markdown_into_chunks, search_similar_chunks_service
-from agentlz.services.cos_service import upload_document_to_cos
+from agentlz.services.cos_service import upload_document_to_cos,get_origin_url_from_save_https
 from agentlz.core.external_services import publish_to_rabbitmq
 from markitdown import MarkItDown
-from agentlz.services.cos_service import get_origin_url_from_save_https
 
 logger = setup_logging()
 
@@ -899,154 +899,39 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
         )
         return ""
 
+def list_agent_related_document_ids_service(*, agent_id: int) -> dict[str, list[str]]:
+    """根据 Agent ID 获取关联文档，按租户分组返回 {tenant_id: doc_id[]}
 
-def rag_search_service(
-    *,
-    query: str,
-    tenant_id: str,
-    claims: Optional[Dict[str, Any]] = None,
-    doc_ids: Optional[List[str]] = None,
-    limit: int = 10,
-    distance_metric: str = "euclidean",
-    include_vector: bool = False,
-) -> list[Dict[str, Any]]:
+    参数：
+    - `agent_id`: Agent 主键 ID。
+
+    返回：
+    - 字典：键为租户 `tenant_id`，值为该租户下关联的文档 ID 列表（按关联记录倒序，自动去重与去空）。
+    - 例如：{"default": ["doc1", "doc2"], "tenant1": ["doc3"]}
     """
-    执行 RAG 搜索，返回符合条件的文档块列表。
-
-    参数:
-        query (str): 搜索查询字符串。
-        tenant_id (str): 租户 ID，用于确定文档范围。
-        claims (Optional[Dict[str, Any]]): 用户认证 claims，包含用户 ID 等信息。
-        doc_ids (Optional[List[str]]): 可选文档 ID 列表
-        limit (int): 返回结果数量上限，默认 10。
-        distance_metric (str): 距离度量方法，默认欧氏距离。"euclidean"或"cosine"
-        include_vector (bool): 是否包含向量表示，默认不包含。
-
-    返回:
-        list[Dict[str, Any]]: 符合条件的文档块列表，每个元素包含文档 ID、内容、距离等信息。
-    """
-    _ensure_authenticated(claims)
-    table_name, _ = _get_table_and_header()
-    current_user_id: Optional[int] = None
-    if claims and "sub" in claims:
-        try:
-            current_user_id = int(claims["sub"])
-        except (ValueError, TypeError):
-            current_user_id = None
-    if current_user_id is None:
-        raise HTTPException(status_code=401, detail="无法获取用户身份信息")
-
     s = get_settings()
+    rel_table = getattr(s, "agent_document_table_name", "agent_document")
+    table_name, _ = _get_table_and_header()
     user_table_name = getattr(s, "user_table_name", "users")
-    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permission")
-    tenant_table_name =  getattr(s, "tenant_table_name", "tenant")
-
-    user_info = user_repo.get_user_by_id(
-        user_id=current_user_id,
-        tenant_id=tenant_id,
-        table_name=user_table_name,
-    )
-    user_role = (user_info or {}).get("role", "user")
-    user_tenant_id = (user_info or {}).get("tenant_id", tenant_id)
-
-    # 预先计算可访问的 doc_id 集合并排除禁用文档
-
-    # system 文档：任何用户可见，但需过滤 disabled
-    system_doc_ids = repo.list_doc_ids_by_tenant(
-        tenant_id="system",
-        table_name=table_name,
-        exclude_disabled=True,
-    )
-
-    # 当前租户文档：admin 可见全部，否则根据权限表（admin/read）
-    if user_role == "admin":
-        tenant_doc_ids = repo.list_doc_ids_by_tenant(
-            tenant_id=user_tenant_id,
-            table_name=table_name,
-            exclude_disabled=True,
-        )
-    else:
-        tenant_doc_ids = repo.list_tenant_doc_ids_with_permission(
-            user_id=current_user_id,
-            tenant_id=user_tenant_id,
-            table_name=table_name,
-            perm_table_name=perm_table,
-            exclude_disabled=True,
-        )
-
-    # 若指定了 doc_id，则在两个集合中分别取交集，仅检索该文档
-    if doc_id:
-        system_doc_ids = [doc_id] if doc_id in set(system_doc_ids) else []
-        tenant_doc_ids = [doc_id] if doc_id in set(tenant_doc_ids) else []
-
-    # 两端都无可检索文档，直接返回
-    if not system_doc_ids and not tenant_doc_ids:
-        return []
-
-    # 有可检索文档后再生成查询向量，避免不必要的计算
-    from agentlz.core.embedding_model_factory import get_hf_embeddings
-    emb = get_hf_embeddings()
-    vec = emb.embed_query(str(query))
-
-    # 双租户分别检索并合并
-    tenant_results = []
-    system_results = []
-    if tenant_doc_ids:
-        tenant_results = search_similar_chunks_service(
-            tenant_id=user_tenant_id,
-            embedding=vec,
-            doc_ids=tenant_doc_ids,
-            distance_metric=distance_metric,
-            limit=limit,
-            include_vector=include_vector,
-        )
-    if system_doc_ids:
-        system_results = search_similar_chunks_service(
-            tenant_id="system",
-            embedding=vec,
-            doc_ids=system_doc_ids,
-            distance_metric=distance_metric,
-            limit=limit,
-            include_vector=include_vector,
-        )
-
-    merged = tenant_results + system_results
-    # 全局排序后截取 top-K（距离越小越相似）
-    merged.sort(key=lambda x: float(x.get("similarity_score", 1e9)))
-    merged = merged[:limit]
-
-    # 补充文档元数据并进行最终权限确认（防御性）
-    enriched: list[Dict[str, Any]] = []
-    for r in merged:
-        src_tid = str(r.get("tenant_id") or user_tenant_id)
-        d = repo.get_document_with_names_by_id(
-            doc_id=str(r.get("doc_id")),
-            tenant_id=src_tid,
+    tenant_table_name = "tenant"
+    rows = agdoc_repo.list_agent_documents(agent_id=agent_id, table_name=rel_table)
+    seen: set[str] = set()
+    grouped: dict[str, list[str]] = {}
+    for r in rows:
+        d = str(r.get("document_id") or "").strip()
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        doc_row = repo.get_document_with_names_by_id_any_tenant(
+            doc_id=d,
             table_name=table_name,
             user_table_name=user_table_name,
             tenant_table_name=tenant_table_name,
         )
-        if not d or int(d.get("disabled", 0) or 0) == 1:
+        if not doc_row:
             continue
-        if not _check_document_access_permission(
-            document=d,
-            current_user_id=current_user_id,
-            tenant_id=src_tid,
-        ):
-            continue
-        if d.get("upload_time") is not None:
-            d["upload_time"] = str(d["upload_time"])
-        item: Dict[str, Any] = {
-            "chunk_id": r.get("chunk_id"),
-            "tenant_id": src_tid,
-            "doc_id": r.get("doc_id"),
-            "content": r.get("content"),
-            "similarity_score": r.get("similarity_score"),
-            "doc_title": d.get("title"),
-            "doc_type": d.get("type"),
-            "doc_save_https": d.get("save_https"),
-        }
-        if include_vector and r.get("embedding") is not None:
-            item["embedding"] = r.get("embedding")
-        enriched.append(item)
-    return enriched
+        tid = str(doc_row.get("tenant_id") or "")
+        if not tid:
+            tid = "default"
+        grouped.setdefault(tid, []).append(d)
+    return grouped

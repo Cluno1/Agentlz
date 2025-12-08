@@ -40,6 +40,23 @@ def _get_embedder():
     return _EMB
 
 
+def embed_message_service(*, message: str) -> Sequence[float]:
+    """将输入消息转换为嵌入向量
+
+    参数:
+        - message: 原始文本消息
+
+    返回值:
+        - 向量数组（Sequence[float]），用于相似度搜索或存储
+
+    异常:
+        - ValueError: 当 message 为空或仅包含空白字符时
+    """
+    if not isinstance(message, str) or message.strip() == "":
+        raise ValueError("message_required")
+    return _get_embedder().embed_query(message)
+
+
 def create_chunk_embedding_service(*, tenant_id: str, chunk_id: str, doc_id: str, content: Optional[str] = None, embedding: Optional[Sequence[float]] = None) -> Dict[str, Any]:
     """创建分块嵌入记录
 
@@ -139,7 +156,8 @@ def delete_chunk_embedding_service(*, tenant_id: str, chunk_id: str) -> bool:
 def search_similar_chunks_service(
     *,
     tenant_id: str,
-    embedding: Sequence[float],
+    message:str,
+    messages: Optional[Sequence[str]] = None,
     doc_id: Optional[str] = None,
     doc_ids: Optional[Sequence[str]] = None,
     distance_metric: Literal["euclidean", "cosine"] = "euclidean",
@@ -158,7 +176,8 @@ def search_similar_chunks_service(
     
     参数:
         - tenant_id: 租户标识，用于RLS隔离
-        - embedding: 查询向量，维度需与存储向量一致(1536维)
+        - message: 查询消息，将自动向量化
+        - messages: 可选的消息列表，将对每条消息分别检索并合并去重后返回全局 Top-K
         - doc_id: 可选的文档ID过滤条件，为空则搜索所有文档
         - distance_metric: 距离度量方式，可选"euclidean"或"cosine"
         - limit: 返回结果数量上限
@@ -168,6 +187,7 @@ def search_similar_chunks_service(
         - 相似文本块列表，按相似度升序排列（距离越小越相似）
         - 每个结果包含: chunk_id, doc_id, content, created_at, similarity_score
         - 当include_vector=True时额外包含embedding向量
+        - 当传入 `messages` 时，将对每条消息分别检索并合并去重后返回全局 Top-K
     
     异常:
         - ValueError: 当distance_metric不是"euclidean"或"cosine"时
@@ -185,14 +205,43 @@ def search_similar_chunks_service(
         ...     print(f"相似度: {result['similarity_score']:.4f}")
         ...     print(f"内容: {result['content'][:100]}...")
     """
+    if messages and len(messages) > 0:
+        merged: List[Dict[str, Any]] = []
+        best_by_chunk: Dict[str, Dict[str, Any]] = {}
+        for msg in messages:
+            if not isinstance(msg, str) or msg.strip() == "":
+                continue
+            vec = embed_message_service(msg)
+            rows = _search_similar(
+                tenant_id=tenant_id,
+                embedding=vec,
+                doc_id=doc_id,
+                doc_ids=doc_ids,
+                distance_metric=distance_metric,
+                limit=limit,
+                include_vector=include_vector,
+            )
+            for r in rows:
+                cid = str(r.get("chunk_id") or "")
+                score = float(r.get("similarity_score") or 1e9)
+                prev = best_by_chunk.get(cid)
+                if prev is None or float(prev.get("similarity_score") or 1e9) > score:
+                    best_by_chunk[cid] = r
+        if best_by_chunk:
+            merged = list(best_by_chunk.values())
+            merged.sort(key=lambda x: float(x.get("similarity_score") or 1e9))
+            return merged[:limit]
+        return []
+    
+    vec = embed_message_service(message=message)
     return _search_similar(
         tenant_id=tenant_id,
-        embedding=embedding,
+        embedding=vec,
         doc_id=doc_id,
         doc_ids=doc_ids,
         distance_metric=distance_metric,
         limit=limit,
-        include_vector=include_vector
+        include_vector=include_vector,
     )
 
 

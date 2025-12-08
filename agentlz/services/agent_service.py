@@ -256,6 +256,14 @@ def list_agents_service(
 
 
 def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """获取智能体详情（含权限校验）
+    参数：
+    - agent_id：智能体ID
+    - tenant_id：当前请求所属租户ID（用于权限判定）
+    - claims：鉴权信息（JWT声明）
+    返回：
+    - 若存在且有权限则返回智能体字典；否则返回 None 或抛出 403
+    """
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
@@ -265,3 +273,49 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
     return row
+
+
+def ensure_agent_access_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """确保智能体存在且用户有访问权限
+    参数
+    - agent_id：目标智能体 ID
+    - tenant_id：当前请求的租户标识（用于权限判断）
+    - claims：鉴权信息（JWT 声明的解析结果）
+    返回
+    - 存在且有权限访问的智能体行字典
+    异常
+    - `HTTPException(403)`：无操作权限
+    - `HTTPException(401)`：鉴权缺失或非法（由内部工具抛出）
+    - `HTTPException(404)`：智能体不存在
+    """
+    _ensure_authenticated(claims)
+    uid = _current_user_id(claims)
+    agent_table = _tables()["agent"]
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent不存在")
+    if not _check_agent_permission(row, uid, tenant_id):
+        raise HTTPException(status_code=403, detail="没有权限")
+    return row
+
+def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """按 API 凭证查询智能体
+    参数：
+    - api_name：智能体在外部系统的 API 名称
+    - api_key：智能体在外部系统的 API 密钥
+    返回：
+    - 若匹配成功且未被禁用，返回智能体字典；否则返回 None
+    说明：
+    - 此函数不进行用户权限校验，适用于凭证直连场景
+    """
+    agent_table = _tables()["agent"]
+    row = repo.get_agent_by_api_credentials_any_tenant(api_name=api_name, api_key=api_key, table_name=agent_table)
+    if not row:
+        return None
+    try:
+        if int(row.get("disabled") or 0) == 1:
+            return None
+    except Exception:
+        pass
+    return row
+    

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
+from agentlz.core.logger import setup_logging
 
 
 # 排序字段白名单映射（外部字段名 -> 数据库列名）
@@ -118,6 +119,15 @@ def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Option
 
 
 def get_agent_by_id_any_tenant(*, agent_id: int, table_name: str) -> Optional[Dict[str, Any]]:
+    """跨租户按主键查询智能体
+    参数：
+    - agent_id：主键ID
+    - table_name：表名（通常来自设置）
+    返回：
+    - 命中则返回完整行字典；否则返回 None
+    注意：
+    - 不校验租户隔离，由上层服务做权限判断
+    """
     sql = text(
         f"""
         SELECT id, name, description, api_name, api_key, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
@@ -127,6 +137,30 @@ def get_agent_by_id_any_tenant(*, agent_id: int, table_name: str) -> Optional[Di
     engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": agent_id}).mappings().first()
+    return dict(row) if row else None
+
+
+def get_agent_by_api_credentials_any_tenant(*, api_name: str, api_key: str, table_name: str) -> Optional[Dict[str, Any]]:
+    """跨租户按 API 凭证查询智能体
+    参数：
+    - api_name：外部 API 名称
+    - api_key：外部 API 密钥
+    - table_name：表名
+    返回：
+    - 命中则返回完整行字典；否则返回 None
+    安全：
+    - 使用参数化查询，防止注入
+    """
+    sql = text(
+        f"""
+        SELECT id, name, description, api_name, api_key, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        FROM `{table_name}` WHERE api_name = :api_name AND api_key = :api_key
+        """
+    )
+
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"api_name": api_name, "api_key": api_key}).mappings().first()
     return dict(row) if row else None
 
 

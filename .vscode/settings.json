@@ -35,10 +35,12 @@
         "fdict",
         "ivfflat",
         "keepalive",
+        "lastrowid",
         "markitdown",
         "pgvector",
         "qcloud",
         "rabbitmq",
+        "RERANK",
         "soffice",
         "VHOST"
     ]

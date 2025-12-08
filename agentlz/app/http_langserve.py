@@ -59,7 +59,7 @@ app.include_router(auth_router)
 app.include_router(users_router, dependencies=[Depends(require_auth)])
 app.include_router(document_router, dependencies=[Depends(require_auth)])
 app.include_router(chain_router, dependencies=[Depends(require_auth)])
-app.include_router(agent_router, dependencies=[Depends(require_auth)])
+app.include_router(agent_router)
 
 @app.exception_handler(HTTPException)
 async def _http_exc_handler(request: Request, exc: HTTPException):
