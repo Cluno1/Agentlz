@@ -15,6 +15,11 @@ from agentlz.services.rag_service import agent_chat_get_rag
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
+import uuid
+import json
+import time
+from agentlz.services.cache_service import cache_set
+from agentlz.core.external_services import publish_to_rabbitmq
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
@@ -361,8 +366,13 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     return row
     
 
-def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Iterator[str]:
+def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     """流式聊天服务（SSE）。
+    参数：
+    - agent_id：智能体 ID
+    - message：用户输入消息
+    - record_id：记录 ID（可选，默认 -1 表示无记录）
+    - meta：额外元数据（记录该次对话的上下文的标志, 该标志唯一确认 该次对话是属于谁的）必填
     行为：
     - 先执行 RAG 检索，获得候选文档与历史上下文；
     - 通过 LLM 流式生成答案，按 `text/event-stream` 逐块返回；
@@ -386,10 +396,28 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Ite
             doc = str(out.get("doc") or "")
             content = msg if msg else (doc[:2000] if doc else "模型未配置")
             yield f"data: {content}\n\n"
+            try:
+                ttl = 3600
+                ts = int(time.time())
+                sid = uuid.uuid4().hex[:8]
+                key = f"chat:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
+                payload = {
+                    "agent_id": int(agent_id),
+                    "record_id": int(record_id),
+                    "input": str(out.get("message") or ""),
+                    "output": content,
+                    "created_at": ts,
+                    "meta": meta,
+                }
+                cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
+                publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
+            except Exception:
+                pass
             yield "data: [DONE]\n\n"
         return _fallback()
     chain = prompt | llm
     def _gen() -> Iterator[str]:
+        acc = ""
         try:
             for chunk in chain.stream({
                 "message": str(out.get("message") or ""),
@@ -401,10 +429,26 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Ite
                 except Exception:
                     content = str(chunk)
                 if content:
+                    acc += content
                     yield f"data: {content}\n\n"
         except Exception:
-            # 生成阶段异常：提示并结束
             yield "data: 服务暂时不可用，请稍后重试\n\n"
+        try:
+            ttl = 3600
+            ts = int(time.time())
+            sid = uuid.uuid4().hex[:8]
+            key = f"chat:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
+            payload = {
+                "agent_id": int(agent_id),
+                "record_id": int(record_id),
+                "input": str(out.get("message") or ""),
+                "output": acc,
+                "created_at": ts,
+            }
+            cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
+            publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
+        except Exception:
+            pass
         yield "data: [DONE]\n\n"
     return _gen()
     

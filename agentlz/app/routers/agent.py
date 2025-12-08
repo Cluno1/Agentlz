@@ -191,9 +191,9 @@ def chat_agent(payload: AgentChatInput, request: Request):
         if not payload.record_id:
             raise HTTPException(status_code=400, detail="record_id不能为空")
         rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
-        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id))
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id), meta=payload.meta)
     else:
-        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message)
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, meta=payload.meta)
     return StreamingResponse(generator, media_type="text/event-stream")
     
 

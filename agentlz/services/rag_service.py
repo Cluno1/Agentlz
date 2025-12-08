@@ -19,6 +19,7 @@ from agentlz.repositories import session_repository as sess_repo
 import json
 from agentlz.agents.rag.rag_agent import get_rag_query_agent, rag_build_queries
 from agentlz.schemas.rag import RAGQueryInput, RAGQueryOutput
+from agentlz.core.external_services import get_redis_client
 
 
 def _tables() -> Dict[str, str]:
@@ -104,7 +105,7 @@ def get_doc_topk_messages(
 
 
 def check_all_session_detail_by_record(*, record_id: int) -> List[Dict[str, Any]]:
-    """检查记录关联会话（输入/输出）
+    """检查记录关联的所有会话（输入/输出）
 
     参数：
     - record_id：记录主键 ID（上层已确保存在）
@@ -164,6 +165,28 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
     tables = _tables()
     table = tables["session"]
     rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=table)
+    try:
+        rc = get_redis_client()
+        pattern = f"chat:*:{int(record_id)}:*"
+        keys = list(rc.scan_iter(pattern))
+        items: List[Dict[str, Any]] = []
+        for k in keys:
+            try:
+                v = rc.get(k)
+                if not v:
+                    continue
+                obj = json.loads(v)
+                mi = obj.get("input")
+                mo = obj.get("output")
+                ca = obj.get("created_at")
+                items.append({"meta_input": json.dumps(mi, ensure_ascii=False) if not isinstance(mi, str) else mi, "meta_output": json.dumps(mo, ensure_ascii=False) if not isinstance(mo, str) else mo, "zip": "", "created_at": ca})
+            except Exception:
+                continue
+        if items:
+            items.sort(key=lambda x: int(x.get("created_at") or 0))
+            rows.extend(items)
+    except Exception:
+        pass
     n = len(rows)
     out: List[Dict[str, Any]] = []
     for idx, r in enumerate(rows):
