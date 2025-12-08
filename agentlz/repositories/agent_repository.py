@@ -97,6 +97,120 @@ def list_agents(
     return [dict(r) for r in rows], int(total)
 
 
+def list_self_agents(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    user_id: int,
+    table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """按当前用户创建的智能体分页查询。
+    参数：
+    - page/per_page/sort/order/q：分页与排序参数，支持名称模糊查询
+    - user_id：当前用户ID
+    - table_name：agent 表名
+    过滤：
+    - 仅返回 `tenant_id='default'` 且 `created_by_id=:uid` 的记录
+    返回：
+    - (rows, total) 列表与总数
+    安全：
+    - 全参数化查询，避免注入
+    """
+    # 排序与分页
+    order_dir = "ASC" if str(order or "").upper() == "ASC" else "DESC"
+    sort_col = sort if sort in {"id", "name", "description", "disabled", "created_at", "updated_at", "created_by_id", "updated_by_id"} else "id"
+    offset = (page - 1) * per_page
+    # 构建 WHERE 条件与参数
+    where = ["tenant_id = :tenant_id", "created_by_id = :uid"]
+    params: Dict[str, Any] = {"tenant_id": "default", "uid": int(user_id)}
+    if q:
+        where.append("(name LIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = "WHERE " + " AND ".join(where)
+    # 统计与列表 SQL
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT id, name, description, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        FROM `{table_name}`
+        {where_sql}
+        ORDER BY {sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    # 执行查询
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)
+
+
+def list_accessible_agents_by_user(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    user_id: int,
+    user_role: str,
+    user_tenant_id: str,
+    agent_table_name: str,
+    user_agent_perm_table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """按用户可见权限分页列出可访问的智能体。
+    规则：
+    - 自己创建：`created_by_id = :uid`
+    - 管理员：当 `user_role=admin` 且 `tenant_id = 用户租户` 且该租户不为 `default`
+    - 授权表：`user_agent_permission` 中该用户对智能体的权限在 `('admin','write')`
+    支持：
+    - 名称模糊查询 `q`
+    - 分页与排序（默认按 `id`）
+    安全：
+    - 全参数化查询，避免注入
+    """
+    # 排序与分页
+    order_dir = "ASC" if str(order or "").upper() == "ASC" else "DESC"
+    sort_col = sort if sort in {"id", "name", "description", "api_name", "api_key", "disabled", "created_at", "updated_at", "created_by_id", "updated_by_id"} else "id"
+    offset = (page - 1) * per_page
+    # 将管理员角色转为布尔标记，便于 SQL 判断
+    role_admin = 1 if str(user_role or "").lower() == "admin" else 0
+    # 组合可访问范围的基准条件
+    base_where = (
+        "("  # 括起整体 OR 条件
+        "created_by_id = :uid "
+        "OR (:role_admin = 1 AND tenant_id = :user_tid AND tenant_id <> 'default') "
+        f"OR id IN (SELECT agent_id FROM `{user_agent_perm_table_name}` WHERE user_id = :uid AND perm IN ('admin','write'))"
+        ")"
+    )
+    params: Dict[str, Any] = {"uid": int(user_id), "role_admin": role_admin, "user_tid": str(user_tenant_id)}
+    where_sql = base_where
+    if q:
+        where_sql = where_sql + " AND (name LIKE :q)"
+        params["q"] = f"%{q}%"
+    # 统计与列表 SQL
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{agent_table_name}` WHERE {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT id, name, description, api_name, api_key, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        FROM `{agent_table_name}`
+        WHERE {where_sql}
+        ORDER BY {sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    # 执行查询
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)
+
+
 def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
     """
     按主键与租户查询单条 agent 记录。

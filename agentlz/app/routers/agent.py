@@ -46,6 +46,35 @@ def list_agents(
     return Result.ok({"rows": rows, "total": total})
 
 
+@router.get("/agents/accessible", response_model=Result)
+def list_accessible_agents(
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    sort: str = Query("id"),
+    order: str = Query("DESC", regex="^(ASC|DESC)$"),
+    q: Optional[str] = Query(None),
+):
+    tenant_id = require_tenant_id(request)
+    user_id = claims.get("sub") if isinstance(claims, dict) else None
+    logger.info(
+        f"request {request.method} {request.url.path} "
+        f"page={page} per_page={per_page} sort={sort} order={order} q={q} type={type} "
+        f"tenant_id={tenant_id} user_id={user_id}"
+    )
+    rows, total = agent_service.list_accessible_agents_service(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        q=q,
+        tenant_id=tenant_id,
+        claims=claims,
+    )
+    return Result.ok({"rows": rows, "total": total})
+
+
 @router.get("/agents/{agent_id}", response_model=Result)
 def get_agent(agent_id: int, request: Request, claims: Dict[str, Any] = Depends(require_auth)):
     tenant_id = require_tenant_id(request)
@@ -137,23 +166,26 @@ def chat_agent(payload: AgentChatInput, request: Request):
     logger = setup_logging()
     logger.info(f"chat_agent: {payload}")
 
+    auth_header = request.headers.get("Authorization")
+    claims: Optional[Dict[str, Any]] = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        try:
+            claims = require_auth(auth_header)
+        except HTTPException as e:
+            if not (payload.api_key and payload.api_name):
+                raise e
     agent_id = None
-    # 确认 agent_id
-    if not (payload.api_key and payload.api_name):
-        if not payload.agent_id:
-            raise HTTPException(status_code=400, detail="agent_id不能为空")
-        else:
-            claims = require_auth(request)
-            tenant_id = require_tenant_id(request)
-            user_id = claims.get("sub") if isinstance(claims, dict) else None
-            agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
-            agent_id = int(payload.agent_id)
-    else:
-        # 根据 api_name 和 api_key 获取 agent_id
+    if payload.api_key and payload.api_name:
         row = agent_service.get_agent_by_api_credentials_service(api_name=str(payload.api_name or ""), api_key=str(payload.api_key or ""))
         if not row:
             raise HTTPException(status_code=404, detail="Agent不存在")
         agent_id = int(row.get("id"))
+    else:
+        if not payload.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id不能为空")
+        tenant_id = require_tenant_id(request)
+        agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
+        agent_id = int(payload.agent_id)
 
     if payload.type == 1:
         if not payload.record_id:

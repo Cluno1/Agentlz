@@ -199,31 +199,7 @@ def delete_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict
     return repo.delete_agent(agent_id=agent_id, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=agent_table)
 
 
-def _list_self_agents(*, page: int, per_page: int, sort: str, order: str, q: Optional[str], user_id: int, table_name: str) -> Tuple[List[Dict[str, Any]], int]:
-    order_dir = "ASC" if str(order or "").upper() == "ASC" else "DESC"
-    sort_col = sort if sort in {"id", "name", "description", "disabled", "created_at", "updated_at", "created_by_id", "updated_by_id"} else "id"
-    offset = (page - 1) * per_page
-    where = ["tenant_id = :tenant_id", "created_by_id = :uid"]
-    params: Dict[str, Any] = {"tenant_id": "default", "uid": int(user_id)}
-    if q:
-        where.append("(name LIKE :q)")
-        params["q"] = f"%{q}%"
-    where_sql = "WHERE " + " AND ".join(where)
-    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
-    list_sql = text(
-        f"""
-        SELECT id, name, description, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
-        FROM `{table_name}`
-        {where_sql}
-        ORDER BY {sort_col} {order_dir}
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    engine = get_mysql_engine()
-    with engine.connect() as conn:
-        total = conn.execute(count_sql, params).scalar() or 0
-        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
-    return [dict(r) for r in rows], int(total)
+    
 
 
 def list_agents_service(
@@ -236,13 +212,74 @@ def list_agents_service(
     user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
     agent_table = _tables()["agent"]
     if type == "self":
-        rows, total = _list_self_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
+        rows, total = repo.list_self_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
     elif type == "tenant":
         user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
         rows, total = repo.list_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, tenant_id=user_tid, table_name=agent_table)
     else:
         raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant'")
     for r in rows:
+        r.pop("api_name", None)
+        r.pop("api_key", None)
+        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
+        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+        m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
+        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
+        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+        doc_items: List[Dict[str, Any]] = []
+        for did in d_ids:
+            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables()["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
+            doc_items.append({"id": did, "name": str(d.get("title") or "")})
+        r["documents"] = doc_items
+    return rows, total
+
+
+def list_accessible_agents_service(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    tenant_id: str,
+    claims: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """按当前用户可见权限分页列出所有智能体（不区分 type）。
+    参数：
+    - page/per_page/sort/order/q：分页与排序参数，支持名称模糊查询
+    - tenant_id：请求所属租户（用于解析用户信息）
+    - claims：鉴权信息（必须）
+    行为：
+    - 聚合“自己创建 + 管理员同租户且非 default + 授权表 admin/write”三类可见范围
+    - 返回同时附带 MCP 与文档的简要聚合信息
+    安全：
+    - 仅在鉴权通过后执行查询；隐藏敏感字段（api_name/api_key）
+    """
+    _ensure_authenticated(claims)
+    uid = _current_user_id(claims)
+    s = get_settings()
+    user_table = getattr(s, "user_table_name", "users")
+    user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
+    # 提取用户角色与租户，用于权限判定
+    user_role = str((user_info or {}).get("role") or "")
+    user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
+    agent_table = _tables()["agent"]
+    perm_table = _tables()["user_agent_perm"]
+    rows, total = repo.list_accessible_agents_by_user(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        q=q,
+        user_id=uid,
+        user_role=user_role,
+        user_tenant_id=user_tid,
+        agent_table_name=agent_table,
+        user_agent_perm_table_name=perm_table,
+    )
+    for r in rows:
+        # 隐藏敏感字段
         r.pop("api_name", None)
         r.pop("api_key", None)
         rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
@@ -325,7 +362,17 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     
 
 def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Iterator[str]:
-    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
+    """流式聊天服务（SSE）。
+    行为：
+    - 先执行 RAG 检索，获得候选文档与历史上下文；
+    - 通过 LLM 流式生成答案，按 `text/event-stream` 逐块返回；
+    - 任意阶段出现异常，降级为友好提示且仍以流式结束，不抛 500。
+    """
+    try:
+        out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
+    except Exception:
+        # RAG 过程异常时降级：仅保留原始消息，避免 500
+        out = {"message": str(message or ""), "doc": "", "history": ""}
     settings = get_settings()
     llm = get_model(settings=settings, streaming=True)
     prompt = ChatPromptTemplate.from_messages([
@@ -334,6 +381,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Ite
     ])
     if llm is None:
         def _fallback() -> Iterator[str]:
+            # 无模型配置时的降级流：直接返回输入或文档片段
             msg = str(out.get("message") or "")
             doc = str(out.get("doc") or "")
             content = msg if msg else (doc[:2000] if doc else "模型未配置")
@@ -355,6 +403,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> Ite
                 if content:
                     yield f"data: {content}\n\n"
         except Exception:
+            # 生成阶段异常：提示并结束
             yield "data: 服务暂时不可用，请稍后重试\n\n"
         yield "data: [DONE]\n\n"
     return _gen()
