@@ -255,23 +255,3 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
     return out
     
 
-def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> List[Dict[str, Any]]:
-    """智能体聊天服务（包含 RAG 检索）
-
-    参数：
-    - agent_id：智能体主键 ID（上层已确保存在）
-    - message：用户输入消息
-    - record_id：记录主键 ID（默认 -1，记录id为0,没有历史纪录）
-
-    返回：
-    - 列表，每项包含 `similarity_score/document_id/title/description/meta_https/tags/type/claims`（当 `meta_https/tags` 为 JSON 字符串时解析为对象）
-    """
-
-    out = agent_chat_get_rag(
-        agent_id=agent_id,
-        message=message,
-        record_id=record_id,
-    )
-    # 已经获取到rag和history，后续可以根据需要进行处理
-    return out
-    

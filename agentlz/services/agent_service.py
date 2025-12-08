@@ -11,6 +11,7 @@ from agentlz.repositories import agent_mcp_repository as mcp_rel_repo
 from agentlz.repositories import agent_document_repository as doc_rel_repo
 from agentlz.repositories import mcp_repository as mcp_repo
 from agentlz.repositories import document_repository as doc_repo
+from agentlz.services.rag_service import agent_chat_get_rag
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
@@ -318,4 +319,21 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     except Exception:
         pass
     return row
+    
+
+def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1) -> List[Dict[str, Any]]:
+    """智能体聊天服务（包含 RAG 检索）
+
+    参数：
+    - agent_id：智能体主键 ID（上层已确保存在）
+    - message：用户输入的消息内容
+    - record_id：可选的记录 ID，用于关联聊天记录（默认 -1 表示不关联）
+
+    返回：
+    
+    """
+    out= agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
+
+    # todo: 后续的mcp执行器部分
+    return out
     

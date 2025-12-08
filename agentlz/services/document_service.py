@@ -11,7 +11,7 @@ from agentlz.repositories import agent_document_repository as agdoc_repo
 from agentlz.schemas.document import DocumentUpload
 
 from agentlz.services.chunk_embeddings_service import create_chunk_embedding_service, split_markdown_into_chunks, search_similar_chunks_service
-from agentlz.services.cos_service import upload_document_to_cos,get_origin_url_from_save_https
+from agentlz.services.cos_service import upload_document_to_cos, get_origin_url_from_save_https
 from agentlz.core.external_services import publish_to_rabbitmq
 from markitdown import MarkItDown
 
@@ -35,6 +35,18 @@ logger = setup_logging()
 suffix_map = {
     "pdf": ".pdf", "doc": ".doc", "docx": ".docx", "md": ".md", "txt": ".txt",
     "ppt": ".ppt", "pptx": ".pptx", "xls": ".xls", "xlsx": ".xlsx", "csv": ".csv",
+}
+ext_map = {
+    "pdf": ".pdf",
+    "doc": ".doc",
+    "docx": ".docx",
+            "md": ".md",
+            "txt": ".txt",
+            "ppt": ".ppt",
+            "pptx": ".pptx",
+            "xls": ".xls",
+            "xlsx": ".xlsx",
+            "csv": ".csv",
 }
 
 
@@ -207,7 +219,8 @@ def _check_document_access_permission(
     # 3. 检查 user_doc_permission 表中的权限
     from agentlz.config.settings import get_settings
     s = get_settings()
-    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permissions")
+    perm_table = getattr(
+        s, "user_doc_permission_table_name", "user_doc_permissions")
     perm_record = perm_repo.get_perm_by_user_doc(
         user_id=current_user_id,
         doc_id=document.get("id"),
@@ -264,7 +277,8 @@ def _check_document_update_delete_permission(
     # 2. 检查 user_doc_permission 表中的权限（需要 admin 或 write 权限）
     from agentlz.config.settings import get_settings
     s = get_settings()
-    perm_table = getattr(s, "user_doc_permission_table_name", "user_doc_permissions")
+    perm_table = getattr(
+        s, "user_doc_permission_table_name", "user_doc_permissions")
     perm_record = perm_repo.get_perm_by_user_doc(
         user_id=current_user_id,
         doc_id=document.get("id"),
@@ -781,25 +795,17 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
         if file_size == 0:
             raise Exception("文件大小为0，可能文件为空或链接无效")
 
-        ext_map = {
-            "pdf": ".pdf",
-            "doc": ".doc",
-            "docx": ".docx",
-            "md": ".md",
-            "txt": ".txt",
-            "ppt": ".ppt",
-            "pptx": ".pptx",
-            "xls": ".xls",
-            "xlsx": ".xlsx",
-            "csv": ".csv",
-        }
+        # 确定文件扩展名
         forced_ext = ext_map.get(str(document_type or "").lower().strip())
 
         def _convert_legacy_ppt_to_markdown() -> str:
             """
             解析ppt格式
             """
-            import tempfile, os, shutil, subprocess
+            import tempfile
+            import os
+            import shutil
+            import subprocess
             get_resp = requests.get(ori_url, stream=True, timeout=30)
             get_resp.raise_for_status()
             handle, ppt_path = tempfile.mkstemp(suffix=".ppt")
@@ -808,7 +814,8 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
                 with open(ppt_path, "wb") as f:
                     for chunk in get_resp.iter_content(8192):
                         f.write(chunk)
-                soffice = shutil.which("soffice") or shutil.which("libreoffice")
+                soffice = shutil.which(
+                    "soffice") or shutil.which("libreoffice")
                 if not soffice:
                     try:
                         from tika import parser as tika_parser
@@ -820,7 +827,8 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
                         pass
                     try:
                         import textract
-                        content = textract.process(ppt_path).decode("utf-8", "ignore").strip()
+                        content = textract.process(ppt_path).decode(
+                            "utf-8", "ignore").strip()
                         if content:
                             return content
                     except Exception:
@@ -829,7 +837,8 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
                 outdir = tempfile.mkdtemp()
                 try:
                     proc = subprocess.run(
-                        [soffice, "--headless", "--convert-to", "pptx", "--outdir", outdir, ppt_path],
+                        [soffice, "--headless", "--convert-to",
+                            "pptx", "--outdir", outdir, ppt_path],
                         capture_output=True,
                         text=True,
                         timeout=180,
@@ -853,9 +862,73 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
                 except Exception:
                     pass
 
+        def _convert_legacy_doc_to_markdown() -> str:
+            import tempfile
+            import os
+            import shutil
+            import subprocess
+            get_resp = requests.get(ori_url, stream=True, timeout=30)
+            get_resp.raise_for_status()
+            handle, doc_path = tempfile.mkstemp(suffix=".doc")
+            os.close(handle)
+            try:
+                with open(doc_path, "wb") as f:
+                    for chunk in get_resp.iter_content(8192):
+                        f.write(chunk)
+                soffice = shutil.which(
+                    "soffice") or shutil.which("libreoffice")
+                if not soffice:
+                    try:
+                        from tika import parser as tika_parser
+                        parsed = tika_parser.from_file(doc_path)
+                        content = (parsed.get("content") or "").strip()
+                        if content:
+                            return content
+                    except Exception:
+                        pass
+                    try:
+                        import textract
+                        content = textract.process(doc_path).decode(
+                            "utf-8", "ignore").strip()
+                        if content:
+                            return content
+                    except Exception:
+                        pass
+                    raise RuntimeError("soffice_not_found")
+                outdir = tempfile.mkdtemp()
+                try:
+                    proc = subprocess.run(
+                        [soffice, "--headless", "--convert-to",
+                            "docx", "--outdir", outdir, doc_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                    )
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"convert_failed: {proc.stderr}")
+                    converted = None
+                    for name in os.listdir(outdir):
+                        if name.lower().endswith(".docx"):
+                            converted = os.path.join(outdir, name)
+                            break
+                    if not converted:
+                        raise RuntimeError("docx_not_generated")
+                    res = md.convert_local(converted, file_extension=".docx")
+                    return res.text_content
+                finally:
+                    shutil.rmtree(outdir, ignore_errors=True)
+            finally:
+                try:
+                    os.unlink(doc_path)
+                except Exception:
+                    pass
+
         if forced_ext == ".ppt":
             text_content = _convert_legacy_ppt_to_markdown()
+        elif forced_ext == ".doc":
+            text_content = _convert_legacy_doc_to_markdown()
         else:
+
             if forced_ext:
                 result = md.convert(ori_url, file_extension=forced_ext)
             else:
@@ -887,7 +960,8 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
         try:
             msg = str(e)
             if "soffice_not_found" in msg:
-                logger.error("缺少 LibreOffice/soffice，安装后支持 .ppt 转换：brew install --cask libreoffice；或将 .ppt 转为 .pptx 后再上传")
+                logger.error(
+                    "缺少 LibreOffice/soffice，安装后支持 .ppt 转换：brew install --cask libreoffice；或将 .ppt 转为 .pptx 后再上传")
         except Exception:
             pass
         table_name, _ = _get_table_and_header()
@@ -898,6 +972,7 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
             table_name=table_name,
         )
         return ""
+
 
 def list_agent_related_document_ids_service(*, agent_id: int) -> dict[str, list[str]]:
     """根据 Agent ID 获取关联文档，按租户分组返回 {tenant_id: doc_id[]}
@@ -914,7 +989,8 @@ def list_agent_related_document_ids_service(*, agent_id: int) -> dict[str, list[
     table_name, _ = _get_table_and_header()
     user_table_name = getattr(s, "user_table_name", "users")
     tenant_table_name = "tenant"
-    rows = agdoc_repo.list_agent_documents(agent_id=agent_id, table_name=rel_table)
+    rows = agdoc_repo.list_agent_documents(
+        agent_id=agent_id, table_name=rel_table)
     seen: set[str] = set()
     grouped: dict[str, list[str]] = {}
     for r in rows:

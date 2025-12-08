@@ -159,10 +159,10 @@ def chat_agent(payload: AgentChatInput, request: Request):
         if not payload.record_id:
             raise HTTPException(status_code=400, detail="record_id不能为空")
         rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
-        out = rag_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id))
+        out = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id))
     else:# 创建新纪录
         
-        out = rag_service.agent_chat_service(agent_id=agent_id, message=payload.message)
+        out = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message)
     return Result.ok(out)
     
 
