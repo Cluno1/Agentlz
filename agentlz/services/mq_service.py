@@ -9,6 +9,7 @@ import pika
 
 from agentlz.services.document_service import process_document_from_cos_https
 from agentlz.services.cache_service import cache_get
+from agentlz.repositories import session_repository as sess_repo
 
 logger = setup_logging()
 class BizError(Exception):
@@ -181,7 +182,24 @@ class MQService:
                 raise BizError("消息格式不完整，缺少必要字段")
 
             cached = cache_get(str(redis_key))
-            logger.info(f"聊天持久化占位，redis_key={redis_key}，payload存在={bool(cached)}")
+            if not cached:
+                raise BizError("redis payload 不存在")
+            obj = json.loads(cached)
+            inp = obj.get("input")
+            outp = obj.get("output")
+            if inp is None or outp is None:
+                raise BizError("redis payload 缺少 input/output")
+            s = get_settings()
+            sess_table = getattr(s, "session_table_name", "session")
+            rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=sess_table)
+            next_count = 1
+            if rows:
+                try:
+                    last = rows[-1]
+                    next_count = int(last.get("count") or 0) + 1
+                except Exception:
+                    next_count = 1
+            sess_repo.create_session(record_id=int(record_id), count=int(next_count), meta_input=inp, meta_output=outp, zip=str(session_id or ""), table_name=sess_table)
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 

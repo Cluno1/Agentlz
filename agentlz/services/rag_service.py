@@ -20,6 +20,8 @@ import json
 from agentlz.agents.rag.rag_agent import get_rag_query_agent, rag_build_queries
 from agentlz.schemas.rag import RAGQueryInput, RAGQueryOutput
 from agentlz.core.external_services import get_redis_client
+import time
+import uuid
 
 
 def _tables() -> Dict[str, str]:
@@ -152,7 +154,7 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
     - limit_output：返回条数上限（从后往前数，0 表示不返回输出）
 
     返回：
-    - 列表，每项包含 `input/output/zip`（当 `limit_* > 0` 时包含对应值，否则为 None）
+    - 列表，每项包含 `input/output/zip/count`（当 `limit_* > 0` 时包含对应值，否则为 None）
     """
     if int(record_id) <= 0:
         return []
@@ -167,8 +169,14 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
     rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=table)
     try:
         rc = get_redis_client()
-        pattern = f"chat:*:{int(record_id)}:*"
-        keys = list(rc.scan_iter(pattern))
+        rid = int(record_id)
+        patterns = [f"record:*:{rid}:*"]
+        keys: List[str] = []
+        for p in patterns:
+            try:
+                keys.extend(list(rc.scan_iter(p)))
+            except Exception:
+                continue
         items: List[Dict[str, Any]] = []
         for k in keys:
             try:
@@ -179,9 +187,63 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
                 mi = obj.get("input")
                 mo = obj.get("output")
                 ca = obj.get("created_at")
-                items.append({"meta_input": json.dumps(mi, ensure_ascii=False) if not isinstance(mi, str) else mi, "meta_output": json.dumps(mo, ensure_ascii=False) if not isinstance(mo, str) else mo, "zip": "", "created_at": ca})
+                items.append({
+                    "meta_input": json.dumps(mi, ensure_ascii=False) if not isinstance(mi, str) else mi,
+                    "meta_output": json.dumps(mo, ensure_ascii=False) if not isinstance(mo, str) else mo,
+                    "zip": "",
+                    "created_at": ca,
+                })
             except Exception:
                 continue
+        db_count = len(rows)
+        redis_count = len(items)
+        ttl = 3600
+        if db_count > redis_count:
+            for k in keys:
+                try:
+                    rc.expire(k, ttl)
+                except Exception:
+                    pass
+            missing = db_count - redis_count
+            if missing > 0:
+                add_rows = rows[-missing:] if missing <= db_count else rows
+                for r in add_rows:
+                    try:
+                        mi = r.get("meta_input")
+                        mo = r.get("meta_output")
+                        count = r.get("count") or 1
+                        try:
+                            inp = json.loads(mi) if isinstance(mi, str) else mi
+                        except Exception:
+                            inp = mi
+                        try:
+                            outp = json.loads(mo) if isinstance(mo, str) else mo
+                        except Exception:
+                            outp = mo
+                        ca = r.get("created_at")
+                        try:
+                            ts = int(ca.timestamp())  # type: ignore
+                        except Exception:
+                            try:
+                                ts = int(ca)  # type: ignore
+                            except Exception:
+                                ts = int(time.time())
+                        sid = uuid.uuid4().hex[:8]
+                        key = f"record:0:{rid}:{ts}:{sid}"
+                        payload = {"input": inp, "output": outp, "created_at": ts}
+                        try:
+                            rc.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
+                        except Exception:
+                            pass
+                        items.append({
+                            "meta_input": json.dumps(inp, ensure_ascii=False) if not isinstance(inp, str) else inp,
+                            "meta_output": json.dumps(outp, ensure_ascii=False) if not isinstance(outp, str) else outp,
+                            "zip": "",
+                            "created_at": ts,
+                            "count": count,
+                        })
+                    except Exception:
+                        continue
         if items:
             items.sort(key=lambda x: int(x.get("created_at") or 0))
             rows.extend(items)
@@ -221,10 +283,10 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
     - record_id：记录主键 ID（默认 -1，记录id为0,没有历史纪录）
 
     返回：
-    - 列表 {"doc": doc_joined,// rag检索文档
-     "history": his_joined, // 当前用户的历史问答记录
-     "message": message, // 用户输入消息
-     "messages": optimized_msgs // rag优化后的查询短句数组
+    - 列表 {"doc": doc_joined,// rag检索文档  str
+     "history": his_joined, // 当前用户的历史问答记录 str
+     "message": message, // 用户输入消息 str
+     "messages": optimized_msgs // rag优化后的查询短句数组 str[]
      }
     """
 
@@ -260,6 +322,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
             except Exception:
                 optimized_msgs = []
         logger.info(f"rag 优化后的查询短句: {optimized_msgs}")
+        # 执行 RAG 检索，获得候选文档与历史上下文
         rag = get_doc_topk_messages(
             agent_id=int(agent_id),
             message=message,
@@ -267,6 +330,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
         )
     for x in rag:
         logger.info(f"rag 得分(越小越相关): {x.get('similarity_score')}")
+    # 检查记录是否存在会话表，若存在则读取历史上下文
     history=check_session_for_rag(
         record_id=int(record_id),
         limit_input=5,

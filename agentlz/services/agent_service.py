@@ -12,6 +12,7 @@ from agentlz.repositories import agent_document_repository as doc_rel_repo
 from agentlz.repositories import mcp_repository as mcp_repo
 from agentlz.repositories import document_repository as doc_repo
 from agentlz.services.rag_service import agent_chat_get_rag
+from agentlz.repositories import record_repository as record_repo
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
@@ -378,7 +379,17 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
     - 通过 LLM 流式生成答案，按 `text/event-stream` 逐块返回；
     - 任意阶段出现异常，降级为友好提示且仍以流式结束，不抛 500。
     """
+    s_for_record = get_settings()
+    if int(record_id) <= 0:
+        r_table = getattr(s_for_record, "record_table_name", "record")
+        nm = str(message or "")
+        created_row = record_repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=r_table)
+        try:
+            record_id = int(created_row.get("id"))
+        except Exception:
+            record_id = int(created_row.get("id") or -1)
     try:
+        # 执行 RAG 检索，获得候选文档与历史上下文
         out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
     except Exception:
         # RAG 过程异常时降级：仅保留原始消息，避免 500
@@ -395,12 +406,16 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
             msg = str(out.get("message") or "")
             doc = str(out.get("doc") or "")
             content = msg if msg else (doc[:2000] if doc else "模型未配置")
+            try:
+                yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
+            except Exception:
+                yield f"data: {json.dumps({'record_id': record_id})}\n\n"
             yield f"data: {content}\n\n"
             try:
                 ttl = 3600
                 ts = int(time.time())
                 sid = uuid.uuid4().hex[:8]
-                key = f"chat:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
+                key = f"record:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
                 payload = {
                     "agent_id": int(agent_id),
                     "record_id": int(record_id),
@@ -419,6 +434,10 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
     def _gen() -> Iterator[str]:
         acc = ""
         try:
+            yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
+        except Exception:
+            yield f"data: {json.dumps({'record_id': record_id})}\n\n"
+        try:
             for chunk in chain.stream({
                 "message": str(out.get("message") or ""),
                 "doc": str(out.get("doc") or ""),
@@ -433,17 +452,19 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     yield f"data: {content}\n\n"
         except Exception:
             yield "data: 服务暂时不可用，请稍后重试\n\n"
+        # 缓存并发布到 RabbitMQ 聊天持久化-> 用途: 保存到mysql
         try:
             ttl = 3600
             ts = int(time.time())
             sid = uuid.uuid4().hex[:8]
-            key = f"chat:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
+            key = f"record:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
             payload = {
                 "agent_id": int(agent_id),
                 "record_id": int(record_id),
                 "input": str(out.get("message") or ""),
                 "output": acc,
                 "created_at": ts,
+                "meta": meta,
             }
             cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
             publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
