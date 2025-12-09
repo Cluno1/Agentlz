@@ -142,6 +142,7 @@ def get_record_by_id(*, record_id: int, table_name: str) -> Optional[Dict[str, A
     return row
 
 
+
 def update_record(*, record_id: int, payload: Dict[str, Any], table_name: str) -> Optional[Dict[str, Any]]:
     """更新 Record（允许修改 name/meta）并回读
 
@@ -272,4 +273,61 @@ def list_records_by_agent(
                 r["meta"] = json.loads(m)
             except Exception:
                 pass
+    return out, int(total)
+
+
+def list_records_by_meta_and_agent_id(
+    *,
+    agent_id: int,
+    meta_keyword: Optional[str],
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """按 `agent_id` 与 `meta` 关键字分页查询 Record 列表
+
+    参数：
+    - agent_id：所属 Agent 主键
+    - meta_keyword：`meta` 关键字（字符串匹配，LIKE），为空则忽略该条件
+    - page、per_page：分页参数（页码从 1 开始）
+    - sort：排序字段（白名单：id/name/createdAt），默认建议传 `createdAt`
+    - order：排序方向（ASC/DESC），默认倒序 `DESC`
+    - table_name：表名
+
+    返回：
+    - (rows, total) 二元组；`rows` 每行为字典，仅包含 `id/agent_id/name/created_at`
+
+    说明：
+    - 安全：所有用户输入均通过绑定参数传递，避免 SQL 注入
+    - 性能：分页查询先统计总数，再按偏移量拉取当前页数据
+    """
+    order_dir = "ASC" if str(order or "").upper() == "ASC" else "DESC"
+    sort_col = _sanitize_sort(sort)
+    offset = (max(1, int(page)) - 1) * max(1, int(per_page))
+
+    where = ["agent_id = :agent_id"]
+    params: Dict[str, Any] = {"agent_id": int(agent_id)}
+    if meta_keyword:
+        where.append("meta LIKE :meta_q")
+        params["meta_q"] = f"%{meta_keyword}%"
+    where_sql = "WHERE " + " AND ".join(where)
+
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT id, agent_id, name, created_at
+        FROM `{table_name}`
+        {where_sql}
+        ORDER BY {sort_col} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    out: List[Dict[str, Any]] = [dict(r) for r in rows]
     return out, int(total)

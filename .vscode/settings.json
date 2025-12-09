@@ -42,6 +42,7 @@
         "qcloud",
         "rabbitmq",
         "RERANK",
+        "sess",
         "soffice",
         "VHOST"
     ]

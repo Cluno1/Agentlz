@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from agentlz.config.settings import get_settings
 from agentlz.core.database import get_mysql_engine
+from agentlz.core.logger import setup_logging
 from agentlz.repositories import agent_repository as repo
 from agentlz.repositories import user_repository as user_repo
 from agentlz.repositories import agent_mcp_repository as mcp_rel_repo
@@ -461,12 +462,36 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                     yield f"data: {content}\n\n"
         except Exception:
             yield "data: 服务暂时不可用，请稍后重试\n\n"
+        # 持久化到缓存和mq
         persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=acc, meta=meta)
         yield "data: [DONE]\n\n"
     return _gen()
 
 def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    """
+    智能体聊天服务，基于 LLM 生成回复流（支持 SSE）
+    参数：
+    - agent_id：智能体 ID
+    - message：用户输入文本
+    - record_id：会话记录 ID,用于mq 和redis发布,必须
+    - meta：可选的元数据字典（如用户 ID、会话 ID 等）
+    返回：
+    - 一个字符串迭代器，每个元素为 SSE 格式的 JSON 字符串，包含 `record_id`、`content` 等键值对
+    说明：
+    - 此函数会根据输入参数调用 LLM 生成回复流，每个回复片段会以 SSE 格式返回
+    - 若 LLM 配置失败，会返回包含错误信息的 SSE 响应
+    - 每个回复片段生成后，会将记录持久化到 Redis 缓存和 RabbitMQ 消息队列
+    """
+    logger = setup_logging()
+
+    logger.info(f" 进入 [agent_chat_service]")
+
+    # 调用 rag 召回流程 获取相关信息:
     out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta)
+
+
+
+
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:

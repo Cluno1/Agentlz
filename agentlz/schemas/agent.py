@@ -42,3 +42,45 @@ class AgentChatInput(BaseModel):
     record_id: Optional[int] = None
     meta: Optional[dict] = None
     message: str = Field(..., description="用户输入的消息")
+
+
+class AgentChatHistoryInput(BaseModel):
+    """
+    查询 Agent 关联的聊天历史记录（Record）分页列表
+
+    - `agent_id`: Agent ID；当未提供 `api_name/api_key` 时必须提供，并验证用户 Token
+    - `api_name`: Agent API 名称；与 `api_key` 搭配用于免登录鉴权
+    - `api_key`: Agent API 密钥；与 `api_name` 搭配用于免登录鉴权
+    - `meta`: 元数据，用于后续记录检索（可选）
+    - `page`: 页码（从 1 开始）
+    - `per_page`: 每页条数（最大 100）
+    - `keyword`: 基于 `name` 的关键字模糊匹配（LIKE）
+    """
+    agent_id: Optional[int] = None
+    api_name: Optional[str] = None
+    api_key: Optional[str] = None
+    meta: Optional[dict] = None
+    page: int = Field(default=1, ge=1)
+    per_page: int = Field(default=10, ge=1, le=100)
+    keyword: Optional[str] = None
+
+
+class AgentChatSessionInput(BaseModel):
+    """
+    查询 Agent 关联的聊天会话（Session）分页列表
+
+    - `agent_id`: Agent ID；当未提供 `api_name/api_key` 时必须提供，并验证用户 Token
+    - `api_name`: Agent API 名称；与 `api_key` 搭配用于免登录鉴权
+    - `api_key`: Agent API 密钥；与 `api_name` 搭配用于免登录鉴权
+    - `meta`: 元数据，用于后续记录检索（可选）
+    - `record_id`: 记录 ID；必须提供，用于查询该记录关联的会话
+    - `page`: 页码（从 1 开始）
+    - `per_page`: 每页条数（最大 100）
+    """
+    agent_id: Optional[int] = None
+    api_name: Optional[str] = None
+    api_key: Optional[str] = None
+    meta: Optional[dict] = None
+    record_id: int
+    page: int = Field(default=1, ge=1)
+    per_page: int = Field(default=10, ge=1, le=100)

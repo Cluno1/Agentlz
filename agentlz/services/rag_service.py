@@ -7,7 +7,7 @@ from agentlz.core.logger import setup_logging
 运用的表: record session
 """
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from fastapi import HTTPException
 
 from agentlz.config.settings import get_settings
@@ -60,6 +60,64 @@ def ensure_record_belongs_to_agent_service(*, record_id: int, agent_id: int) -> 
     return row
 
 
+def get_list_records_by_meta_and_agent_id(
+    *,
+    agent_id: int,
+    page: int = 1,
+    per_page: int = 10,
+    meta_keyword: Optional[str] = None,
+    ) -> Dict[str, Any]:
+    """分页查询 Record（按 agent_id 与 meta 关键字）
+
+    参数：
+    - agent_id：Agent 主键 ID
+    - page：页码（从 1 开始，默认 1）
+    - per_page：每页条数（默认 10）
+    - meta_keyword：基于 `meta` 的关键字模糊匹配（LIKE），为空时忽略
+
+    行为：
+    - 默认按 `created_at` 倒序（DESC）返回
+
+    返回：
+    - 字典：`{"rows": List[Dict], "total": int}`
+      - `rows` 每行包含：`id/agent_id/name/created_at`
+    """
+    tables = _tables()
+    table = tables["record"]
+    # 调用仓储层 SQL，按条件分页查询
+    rows, total = repo.list_records_by_meta_and_agent_id(
+        agent_id=int(agent_id),
+        meta_keyword=meta_keyword,
+        page=max(1, int(page)),
+        per_page=max(1, int(per_page)),
+        sort="createdAt",
+        order="DESC",
+        table_name=table,
+    )
+    return {"rows": rows, "total": int(total)}
+
+
+def get_list_records_by_name_and_agent_id(
+    *,
+    agent_id: int,
+    page: int = 1,
+    per_page: int = 10,
+    keyword: Optional[str] = None,
+) -> Dict[str, Any]:
+    tables = _tables()
+    table = tables["record"]
+    rows, total = repo.list_records_by_agent(
+        agent_id=int(agent_id),
+        page=max(1, int(page)),
+        per_page=max(1, int(per_page)),
+        sort="createdAt",
+        order="DESC",
+        q=keyword,
+        table_name=table,
+    )
+    return {"rows": rows, "total": int(total)}
+
+
 def get_doc_topk_messages(
     *,
     agent_id: int,
@@ -82,6 +140,9 @@ def get_doc_topk_messages(
     返回：
     - 列表，每项包含 `chunk_id/doc_id/content/similarity_score`（当 `include_vector=True` 时包含 `embedding`）
     """
+    logger =  setup_logging()
+    logger.info(f"[检索相似文本块 Top-K]")
+
     if int(limit) <= 0:
         limit = 5
     doc_ids_grouped = doc_service.list_agent_related_document_ids_service(agent_id=int(agent_id))
@@ -103,6 +164,8 @@ def get_doc_topk_messages(
 
     merged.sort(key=lambda x: float(x.get("similarity_score", 1e9)))
     return merged[:limit]
+
+
 
 
 
@@ -145,8 +208,10 @@ def check_all_session_detail_by_record(*, record_id: int) -> List[Dict[str, Any]
     return out
 
 
-def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int) -> List[Dict[str, Any]]:
-    """检查记录关联会话（输入/输出）
+def check_session_for_rag(
+    *, record_id: int, limit_input: int, limit_output: int
+) -> List[Dict[str, Any]]:
+    """检查记录关联会话（输入/输出）全部条数 ,但是可以限制前k条是原始会话,后面是zip压缩会话
 
     参数：
     - record_id：记录主键 ID（上层已确保存在）
@@ -274,6 +339,73 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
     return out
 
 
+
+def get_sessions_by_record_paginated(
+    *,
+    agent_id: int,
+    meta: Optional[Dict[str, Any]],
+    record_id: int,
+    page: int = 1,
+    per_page: int = 10,
+) -> Dict[str, Any]:
+    """分页获取指定记录的会话列表（默认按创建时间倒序）
+
+    参数：
+    - agent_id：智能体主键 ID（上层已确保存在）
+    - meta：记录元数据（可选）
+    - record_id：记录主键 ID（默认 -1，记录id为0,没有历史纪录）
+    - page：页码（默认 1）
+    - per_page：每页数量（默认 10）
+
+    返回：`{"rows": List[Dict[str, Any]], "total": int}`；
+    每行包含：`id/count/input/output/zip/time`
+    """
+    logger = setup_logging()
+    logger.info(f"分页获取指定记录的会话列表 session : agent_id={agent_id}, meta={meta}, record_id={record_id}, page={page}, per_page={per_page}")
+    if int(record_id) <= 0:
+        raise HTTPException(status_code=400, detail="record_id不合法")
+    tables = _tables()
+    rec_table = tables["record"]
+    row = repo.get_record_by_id(record_id=int(record_id))
+    if not row:
+        raise HTTPException(status_code=403, detail="Record ID 错误")
+    elif row.get("agent_id") != int(agent_id) or row.get("meta") != meta:
+        raise HTTPException(status_code=403, detail="Record不属于该Agent")
+    ses_table = tables["session"]
+    rows, total = sess_repo.list_sessions_by_record_paginated(
+        record_id=int(record_id),
+        page=max(1, int(page)),
+        per_page=max(1, int(per_page)),
+        sort="createdAt",
+        order="DESC",
+        table_name=ses_table,
+    )
+    out_rows: List[Dict[str, Any]] = []
+    for r in rows:
+        mi = r.get("meta_input")
+        mo = r.get("meta_output")
+        try:
+            inp = json.loads(mi) if isinstance(mi, str) else mi
+        except Exception:
+            inp = mi
+        try:
+            outp = json.loads(mo) if isinstance(mo, str) else mo
+        except Exception:
+            outp = mo
+        ca = r.get("created_at")
+        out_rows.append(
+            {
+                "id": int(r.get("id")),
+                "count": int(r.get("count") or 0),
+                "input": inp,
+                "output": outp,
+                "zip": r.get("zip"),
+                "time": str(ca) if ca is not None else None,
+            }
+        )
+    return {"rows": out_rows, "total": int(total)}
+
+
 def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """ RAG 检索 部分
 
@@ -291,50 +423,13 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
     """
 
     logger = setup_logging()
+    logger.info(f" 进入 [RAG 检索 部分] ")
     s = get_settings()
     tables = _tables()
-    if int(record_id) <= 0:
-        nm = str(message or "")
-        created_row = repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=tables["record"])
-        try:
-            record_id = int(created_row.get("id"))
-        except Exception:
-            record_id = int(created_row.get("id") or -1)
-    try:
-        rag: List[Dict[str, Any]] = []
-        optimized_msgs: List[str] = []
-        if isinstance(message, str) and message.strip() != "":
-            try:
-                agent = get_rag_query_agent()
-                rq_inp = RAGQueryInput(message=str(message), max_items=6)
-                resp: Any = agent.invoke(rq_inp.model_dump())
-                if isinstance(resp, dict) and resp.get("structured_response") is not None:
-                    sr = resp["structured_response"]
-                    try:
-                        optimized_msgs = list(getattr(sr, "messages", []) or [])
-                    except Exception:
-                        optimized_msgs = []
-                if not optimized_msgs:
-                    try:
-                        _q = RAGQueryInput(message=str(message), max_items=6)
-                        _res = rag_build_queries(_q)
-                        optimized_msgs = list(getattr(_res, "messages", []) or [])
-                    except Exception:
-                        optimized_msgs = []
-            except Exception:
-                try:
-                    _q = RAGQueryInput(message=str(message), max_items=6)
-                    _res = rag_build_queries(_q)
-                    optimized_msgs = list(getattr(_res, "messages", []) or [])
-                except Exception:
-                    optimized_msgs = []
-            rag = get_doc_topk_messages(agent_id=int(agent_id), message=message, messages=optimized_msgs)
-        doc_texts: List[str] = []
-        for x in rag:
-            c = x.get("content")
-            if c:
-                doc_texts.append(str(c))
-        doc_joined = "\n".join(doc_texts)
+    history: List[Dict[str, Any]] = []
+    his_items: List[Tuple[str, str, str]] = []
+    if int(record_id) > 0:
+        # 1. 检查会话是否存在历史记录
         history = check_session_for_rag(record_id=int(record_id), limit_input=5, limit_output=5)
         his_items: List[Tuple[str, str, str]] = []
         for x in history:
@@ -358,10 +453,77 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                 except Exception:
                     outp = str(outp)
             his_items.append((inp or "", outp or "", z or ""))
+    else :
+        his_items=[]
+        history=[]
+    # 没有历史记录时，创建新的记录
+    if int(record_id) <= 0:
+        nm = str(message or "")
+        created_row = repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=tables["record"])
+        try:
+            record_id = int(created_row.get("id"))
+        except Exception:
+            record_id = int(created_row.get("id") or -1)
+    # 2. 构建rag优化后的查询短句数组并进行rag检索
+    try:
+        rag: List[Dict[str, Any]] = []
+        optimized_msgs: List[str] = []
+
         his_parts: List[str] = []
         for i, (inp, outp, z) in enumerate(his_items, start=1):
             his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")
         his_joined = "; ".join(his_parts)
+
+
+        # message 不为空时，才进行rag检索
+        if isinstance(message, str) and message.strip() != "":
+            try:
+                agent = get_rag_query_agent()
+                combined_msg = (
+                    f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
+                    f"——分隔线——\n"
+                    f"当前问题（仅从此处抽取）：\n{str(message)}\n"
+                    f"输出要求：仅返回源自“当前问题”的短句"
+                )
+                rq_inp = RAGQueryInput(message=combined_msg, max_items=6)
+                resp: Any = agent.invoke(rq_inp.model_dump())
+                if isinstance(resp, dict) and resp.get("structured_response") is not None:
+                    sr = resp["structured_response"]
+                    try:
+                        optimized_msgs = list(getattr(sr, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+                if not optimized_msgs:
+                    try:
+                        _q = RAGQueryInput(message=str(message), max_items=6)
+                        _res = rag_build_queries(_q)
+                        optimized_msgs = list(getattr(_res, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+            except Exception:
+                try:
+                    combined_msg = (
+                        f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
+                        f"——分隔线——\n"
+                        f"当前问题（仅从此处抽取）：\n{str(message)}\n"
+                        f"输出要求：仅返回源自“当前问题”的短句"
+                    )
+                    _q = RAGQueryInput(message=str(message), max_items=6)
+                    _res = rag_build_queries(_q)
+                    optimized_msgs = list(getattr(_res, "messages", []) or [])
+                except Exception:
+                    optimized_msgs = []
+            logger.info(f"[RAG 检索 部分] 优化后的查询短句数组 messages={optimized_msgs}")
+            rag = get_doc_topk_messages(agent_id=int(agent_id), message=message, messages=optimized_msgs)
+            
+        
+        doc_texts: List[str] = []
+        for x in rag:
+            c = x.get("content")
+            if c:
+                doc_texts.append(str(c))
+        doc_joined = "\n".join(doc_texts)
+
         out: Dict[str, Any] = {"doc": doc_joined, "history": his_joined, "message": message, "record_id": int(record_id)}
         out.update(RAGQueryOutput(messages=optimized_msgs or [str(message)]).model_dump())
         return out
