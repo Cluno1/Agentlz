@@ -367,33 +367,59 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     return row
     
 
-def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
-    """流式聊天服务（SSE）。
+def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: str, output_text: str, meta: Optional[Dict[str, Any]] = None, ttl: int = 3600) -> None:
+    """
+    持久化智能体会话记录到 Redis 缓存和 RabbitMQ 消息队列
     参数：
     - agent_id：智能体 ID
-    - message：用户输入消息
-    - record_id：记录 ID（可选，默认 -1 表示无记录）
-    - meta：额外元数据（记录该次对话的上下文的标志, 该标志唯一确认 该次对话是属于谁的）必填
-    行为：
-    - 先执行 RAG 检索，获得候选文档与历史上下文；
-    - 通过 LLM 流式生成答案，按 `text/event-stream` 逐块返回；
-    - 任意阶段出现异常，降级为友好提示且仍以流式结束，不抛 500。
+    - record_id：会话记录 ID
+    - input_text：用户输入文本
+    - output_text：智能体回复文本
+    - meta：可选的元数据字典（如用户 ID、会话 ID 等）
+    - ttl：缓存过期时间（秒），默认 3600 秒
+    说明：
+    - 此函数将会话记录以 JSON 格式存储到 Redis 中，键为 `record:{agent_id}:{record_id}:{timestamp}:{session_id}`
+    - 同时将记录发布到 RabbitMQ 队列 `chat_persist_tasks`，用于异步处理
     """
-    s_for_record = get_settings()
-    if int(record_id) <= 0:
-        r_table = getattr(s_for_record, "record_table_name", "record")
-        nm = str(message or "")
-        created_row = record_repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=r_table)
-        try:
-            record_id = int(created_row.get("id"))
-        except Exception:
-            record_id = int(created_row.get("id") or -1)
     try:
-        # 执行 RAG 检索，获得候选文档与历史上下文
-        out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id)
+        ts = int(time.time())
     except Exception:
-        # RAG 过程异常时降级：仅保留原始消息，避免 500
-        out = {"message": str(message or ""), "doc": "", "history": ""}
+        ts = int(time.time())
+    sid = uuid.uuid4().hex[:8]
+    key = f"record:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
+    payload = {
+        "agent_id": int(agent_id),
+        "record_id": int(record_id),
+        "input": input_text,
+        "output": output_text,
+        "created_at": ts,
+        "meta": meta,
+    }
+    try:
+        cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
+    except Exception:
+        pass
+    try:
+        publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
+    except Exception:
+        pass
+
+def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    """
+    简单形 智能体基于 LLM 生成回复流（支持 SSE）
+    参数：
+    - agent_id：智能体 ID
+    - record_id：会话记录 ID,用于mq 和redis发布,必须
+    - out：包含 `message`、`doc`、`history` 等键值对的字典，用于 LLM 输入
+    - meta：可选的元数据字典（如用户 ID、会话 ID 等）
+    返回：
+    - 一个字符串迭代器，每个元素为 SSE 格式的 JSON 字符串，包含 `record_id`、`content` 等键值对
+    说明：
+    - 此函数会根据输入参数调用 LLM 生成回复流，每个回复片段会以 SSE 格式返回
+    - 若 LLM 配置失败，会返回包含错误信息的 SSE 响应
+    - 每个回复片段生成后，会将记录持久化到 Redis 缓存和 RabbitMQ 消息队列
+    """
+    
     settings = get_settings()
     llm = get_model(settings=settings, streaming=True)
     prompt = ChatPromptTemplate.from_messages([
@@ -402,7 +428,6 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
     ])
     if llm is None:
         def _fallback() -> Iterator[str]:
-            # 无模型配置时的降级流：直接返回输入或文档片段
             msg = str(out.get("message") or "")
             doc = str(out.get("doc") or "")
             content = msg if msg else (doc[:2000] if doc else "模型未配置")
@@ -411,23 +436,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
             except Exception:
                 yield f"data: {json.dumps({'record_id': record_id})}\n\n"
             yield f"data: {content}\n\n"
-            try:
-                ttl = 3600
-                ts = int(time.time())
-                sid = uuid.uuid4().hex[:8]
-                key = f"record:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
-                payload = {
-                    "agent_id": int(agent_id),
-                    "record_id": int(record_id),
-                    "input": str(out.get("message") or ""),
-                    "output": content,
-                    "created_at": ts,
-                    "meta": meta,
-                }
-                cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
-                publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
-            except Exception:
-                pass
+            persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=content, meta=meta)
             yield "data: [DONE]\n\n"
         return _fallback()
     chain = prompt | llm
@@ -452,24 +461,15 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     yield f"data: {content}\n\n"
         except Exception:
             yield "data: 服务暂时不可用，请稍后重试\n\n"
-        # 缓存并发布到 RabbitMQ 聊天持久化-> 用途: 保存到mysql
-        try:
-            ttl = 3600
-            ts = int(time.time())
-            sid = uuid.uuid4().hex[:8]
-            key = f"record:{int(agent_id)}:{int(record_id)}:{ts}:{sid}"
-            payload = {
-                "agent_id": int(agent_id),
-                "record_id": int(record_id),
-                "input": str(out.get("message") or ""),
-                "output": acc,
-                "created_at": ts,
-                "meta": meta,
-            }
-            cache_set(key, json.dumps(payload, ensure_ascii=False), expire=ttl)
-            publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
-        except Exception:
-            pass
+        persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=acc, meta=meta)
         yield "data: [DONE]\n\n"
     return _gen()
+
+def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta)
+    try:
+        record_id = int(out.get("record_id") or record_id)
+    except Exception:
+        pass
+    return agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
     

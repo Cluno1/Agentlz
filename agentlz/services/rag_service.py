@@ -274,7 +274,7 @@ def check_session_for_rag(*, record_id: int, limit_input: int, limit_output: int
     return out
 
 
-def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dict[str, Any]:
+def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """ RAG 检索 部分
 
     参数：
@@ -291,85 +291,80 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1) -> Dic
     """
 
     logger = setup_logging()
-    logger.info('进入agent_chat_service服务')
-    rag = []
-    optimized_msgs: List[str] = []
-    if not isinstance(message, str) or message.strip() == "":
-        rag = []
-    else:
+    s = get_settings()
+    tables = _tables()
+    if int(record_id) <= 0:
+        nm = str(message or "")
+        created_row = repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=tables["record"])
         try:
-            agent = get_rag_query_agent()
-            rq_inp = RAGQueryInput(message=str(message), max_items=6)
-            resp: Any = agent.invoke(rq_inp.model_dump())
-            if isinstance(resp, dict) and resp.get("structured_response") is not None:
-                sr = resp["structured_response"]
-                try:
-                    optimized_msgs = list(getattr(sr, "messages", []) or [])
-                except Exception:
-                    optimized_msgs = []
-            if not optimized_msgs:
+            record_id = int(created_row.get("id"))
+        except Exception:
+            record_id = int(created_row.get("id") or -1)
+    try:
+        rag: List[Dict[str, Any]] = []
+        optimized_msgs: List[str] = []
+        if isinstance(message, str) and message.strip() != "":
+            try:
+                agent = get_rag_query_agent()
+                rq_inp = RAGQueryInput(message=str(message), max_items=6)
+                resp: Any = agent.invoke(rq_inp.model_dump())
+                if isinstance(resp, dict) and resp.get("structured_response") is not None:
+                    sr = resp["structured_response"]
+                    try:
+                        optimized_msgs = list(getattr(sr, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+                if not optimized_msgs:
+                    try:
+                        _q = RAGQueryInput(message=str(message), max_items=6)
+                        _res = rag_build_queries(_q)
+                        optimized_msgs = list(getattr(_res, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+            except Exception:
                 try:
                     _q = RAGQueryInput(message=str(message), max_items=6)
                     _res = rag_build_queries(_q)
                     optimized_msgs = list(getattr(_res, "messages", []) or [])
                 except Exception:
                     optimized_msgs = []
-        except Exception:
-            try:
-                _q = RAGQueryInput(message=str(message), max_items=6)
-                _res = rag_build_queries(_q)
-                optimized_msgs = list(getattr(_res, "messages", []) or [])
-            except Exception:
-                optimized_msgs = []
-        logger.info(f"rag 优化后的查询短句: {optimized_msgs}")
-        # 执行 RAG 检索，获得候选文档与历史上下文
-        rag = get_doc_topk_messages(
-            agent_id=int(agent_id),
-            message=message,
-            messages=optimized_msgs,
-        )
-    for x in rag:
-        logger.info(f"rag 得分(越小越相关): {x.get('similarity_score')}")
-    # 检查记录是否存在会话表，若存在则读取历史上下文
-    history=check_session_for_rag(
-        record_id=int(record_id),
-        limit_input=5,
-        limit_output=5,
-    )
-    doc_texts = []
-    for x in rag:
-        c = x.get("content")
-        if c:
-            doc_texts.append(str(c))
-    doc_joined = "\n".join(doc_texts)
-    his_items = []
-    for x in history:
-        z = x.get("zip")
-        inp = x.get("input")
-        outp = x.get("output")
-        if inp is None or (isinstance(inp, str) and inp.strip() == ""):
-            inp = ""
-        if outp is None or (isinstance(outp, str) and outp.strip() == ""):
-            outp = ""
-        if inp is None and outp is None:
-            continue
-        if not isinstance(inp, str):
-            try:
-                inp = json.dumps(inp, ensure_ascii=False)
-            except Exception:
-                inp = str(inp)
-        if not isinstance(outp, str):
-            try:
-                outp = json.dumps(outp, ensure_ascii=False)
-            except Exception:
-                outp = str(outp)
-        his_items.append((inp or "", outp or "", z or ""))
-    his_parts = []
-    for i, (inp, outp, z) in enumerate(his_items, start=1):
-        his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")  
-    his_joined = "; ".join(his_parts)
-    out = {"doc": doc_joined, "history": his_joined, "message": message}
-    out.update(RAGQueryOutput(messages=optimized_msgs or [str(message)]).model_dump())
-    logger.info(f"agent_chat_service_summary: {out}")
-    return out
+            rag = get_doc_topk_messages(agent_id=int(agent_id), message=message, messages=optimized_msgs)
+        doc_texts: List[str] = []
+        for x in rag:
+            c = x.get("content")
+            if c:
+                doc_texts.append(str(c))
+        doc_joined = "\n".join(doc_texts)
+        history = check_session_for_rag(record_id=int(record_id), limit_input=5, limit_output=5)
+        his_items: List[Tuple[str, str, str]] = []
+        for x in history:
+            z = x.get("zip")
+            inp = x.get("input")
+            outp = x.get("output")
+            if inp is None or (isinstance(inp, str) and inp.strip() == ""):
+                inp = ""
+            if outp is None or (isinstance(outp, str) and outp.strip() == ""):
+                outp = ""
+            if inp is None and outp is None:
+                continue
+            if not isinstance(inp, str):
+                try:
+                    inp = json.dumps(inp, ensure_ascii=False)
+                except Exception:
+                    inp = str(inp)
+            if not isinstance(outp, str):
+                try:
+                    outp = json.dumps(outp, ensure_ascii=False)
+                except Exception:
+                    outp = str(outp)
+            his_items.append((inp or "", outp or "", z or ""))
+        his_parts: List[str] = []
+        for i, (inp, outp, z) in enumerate(his_items, start=1):
+            his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")
+        his_joined = "; ".join(his_parts)
+        out: Dict[str, Any] = {"doc": doc_joined, "history": his_joined, "message": message, "record_id": int(record_id)}
+        out.update(RAGQueryOutput(messages=optimized_msgs or [str(message)]).model_dump())
+        return out
+    except Exception:
+        return {"message": str(message or ""), "doc": "", "history": "", "record_id": int(record_id)}
 
