@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
@@ -156,7 +156,7 @@ def create_document(
 
     # 生成 ID（若调用方未提供）
     doc_id = (payload.get("id") or __import__("uuid").uuid4().hex)[:64]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone(timedelta(hours=8)))
     
     # 构建动态SQL，支持可选字段
     columns = ["id", "tenant_id", "uploaded_by_user_id", "status", "upload_time", "title", "content","save_https"]

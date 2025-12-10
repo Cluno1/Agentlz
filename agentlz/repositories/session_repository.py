@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 
 
@@ -45,7 +45,7 @@ def list_sessions_by_record(*, record_id: int, table_name: str) -> List[Dict[str
 def create_session(*, record_id: int, count: int, meta_input: Any, meta_output: Any, zip: str | None, table_name: str) -> Dict[str, Any]:
     mi = meta_input if isinstance(meta_input, str) else json.dumps(meta_input, ensure_ascii=False)
     mo = meta_output if isinstance(meta_output, str) else json.dumps(meta_output, ensure_ascii=False)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone(timedelta(hours=8)))
     sql = text(
         f"""
         INSERT INTO `{table_name}`

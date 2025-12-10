@@ -307,6 +307,7 @@ def list_accessible_agents_service(
         agent_table_name=agent_table,
         user_agent_perm_table_name=perm_table,
     )
+    accessible_agents=[]
     for r in rows:
         # 隐藏敏感字段
         r.pop("api_name", None)
@@ -328,7 +329,10 @@ def list_accessible_agents_service(
             )["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
             doc_items.append({"id": did, "name": str(d.get("title") or "")})
         r["documents"] = doc_items
-    return rows, total
+        # 过滤掉 disabled 为 True 的智能体
+        if not r.get("disabled") :
+            accessible_agents.append(r)
+    return accessible_agents, len(accessible_agents)
 
 
 def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:

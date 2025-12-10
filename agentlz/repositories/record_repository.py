@@ -16,7 +16,7 @@ from __future__ import annotations
 """
 
 from typing import Any, Dict, Optional, Tuple, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from sqlalchemy import text
 
@@ -51,8 +51,8 @@ def create_record(*, payload: Dict[str, Any], table_name: str) -> Dict[str, Any]
     - `meta` 入库统一为 JSON 字符串；回读后尽量反序列化为对象
     - 通过事务插入并立即回读，保证返回的是落库后的实际数据
     """
-    # 记录创建时间（UTC），避免本地时区差异带来存储不一致
-    now = datetime.now(timezone.utc)
+    # 记录创建时间（中国标准时间）
+    now = datetime.now(timezone(timedelta(hours=8)))
 
     # 统一序列化 meta 字段为 JSON 字符串，确保入库兼容性
     meta_val = payload.get("meta")

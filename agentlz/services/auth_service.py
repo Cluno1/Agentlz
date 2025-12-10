@@ -22,7 +22,7 @@ def login_service(*, username: str, password: str) -> tuple[str, UserItem]:
     secret = getattr(s, "auth_jwt_secret", "dev-secret-change-me")
     alg = getattr(s, "auth_jwt_alg", "HS256")
     iss = getattr(s, "auth_jwt_issuer", "agentlz")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone(timedelta(hours=8)))
     exp = now + timedelta(hours=8)
     token = jwt.encode(
         {"sub": str(row["id"]), "username": username, "tenant_id": tenant_id, "iss": iss, "iat": int(now.timestamp()), "exp": int(exp.timestamp())},

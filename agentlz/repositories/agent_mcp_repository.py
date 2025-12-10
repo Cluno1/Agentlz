@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
@@ -74,8 +74,8 @@ def create_agent_mcp(
     table_name: str,
 ) -> Dict[str, Any]:
     """创建关联并回读插入后的完整记录。"""
-    # 记录创建时间（UTC）
-    now = datetime.now(timezone.utc)
+    # 记录创建时间（中国标准时间）
+    now = datetime.now(timezone(timedelta(hours=8)))
     sql = text(
         f"""
         INSERT INTO `{table_name}`
