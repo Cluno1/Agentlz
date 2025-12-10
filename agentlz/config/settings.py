@@ -136,6 +136,10 @@ class Settings(BaseSettings):
 
     chain_hard_limit: int = Field(default=20, env="CHAIN_HARD_LIMIT")
 
+    # SSE 流式输出缓冲阈值
+    sse_flush_ms: float = Field(default=0.08, env="SSE_FLUSH_MS")
+    sse_max_buf: int = Field(default=64, env="SSE_MAX_BUF")
+
 
 def get_settings() -> Settings:
     return Settings()

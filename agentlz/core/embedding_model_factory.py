@@ -6,11 +6,13 @@ from agentlz.core.logger import setup_logging
 from agentlz.core.dimension_extended_embeddings import DimensionExtendedEmbeddings
 
 try:
-    # LangChain 1.x 推荐从 langchain_community 引入 HuggingFaceEmbeddings
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-except Exception:  # 兼容旧版本，必要时可回退
+    
+    from langchain_huggingface import HuggingFaceEmbeddings
+    
+except Exception: 
     try:
-        from langchain.embeddings import HuggingFaceEmbeddings  # type: ignore
+        # LangChain 1.x 推荐从 langchain_community 引入 HuggingFaceEmbeddings
+        from langchain_community.embeddings import HuggingFaceEmbeddings
     except Exception:
         HuggingFaceEmbeddings = None  # 延迟到运行时检查
 

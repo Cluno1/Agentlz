@@ -132,8 +132,6 @@ class MQService:
             # 调用文档处理服务
             process_document_from_cos_https(save_https, document_type,doc_id,tenant_id)
             
-            
-            
             logger.info(f"文档 {doc_id} 处理完成")
             
             # 确认消息处理成功

@@ -58,7 +58,8 @@ def _check_agent_permission(agent: Dict[str, Any], current_user_id: int, tenant_
         return True
     s = get_settings()
     user_table = getattr(s, "user_table_name", "users")
-    user_info = user_repo.get_user_by_id(user_id=current_user_id, tenant_id=tenant_id, table_name=user_table)
+    user_info = user_repo.get_user_by_id(
+        user_id=current_user_id, tenant_id=tenant_id, table_name=user_table)
     if not user_info:
         return False
     if str(user_info.get("role") or "") == "admin" and str(agent.get("tenant_id") or "") != "default" and str(user_info.get("tenant_id") or "") == str(agent.get("tenant_id") or ""):
@@ -82,7 +83,8 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
     uid = _current_user_id(claims)
     s = get_settings()
     user_table = getattr(s, "user_table_name", "users")
-    user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
+    user_info = user_repo.get_user_by_id(
+        user_id=uid, tenant_id=tenant_id, table_name=user_table)
     agent_tenant_id = str((user_info or {}).get("tenant_id") or "default")
     agent_table = _tables()["agent"]
     row = repo.create_agent(
@@ -109,7 +111,8 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             if mid_int in seen:
                 continue
             seen.add(mid_int)
-            mcp_rel_repo.create_agent_mcp(payload={"agent_id": int(row["id"]), "mcp_agent_id": mid_int}, table_name=_tables()["agent_mcp"])
+            mcp_rel_repo.create_agent_mcp(payload={"agent_id": int(
+                row["id"]), "mcp_agent_id": mid_int}, table_name=_tables()["agent_mcp"])
     if doc_ids:
         seen_d: set[str] = set()
         for did in doc_ids:
@@ -117,7 +120,8 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             if did_str in seen_d:
                 continue
             seen_d.add(did_str)
-            doc_rel_repo.create_agent_document(payload={"agent_id": int(row["id"]), "document_id": did_str}, table_name=_tables()["agent_document"])
+            doc_rel_repo.create_agent_document(payload={"agent_id": int(
+                row["id"]), "document_id": did_str}, table_name=_tables()["agent_document"])
     return row
 
 
@@ -137,7 +141,8 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(
+        agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
@@ -150,10 +155,12 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
     if "disabled" in payload and payload["disabled"] is not None:
         update_payload["disabled"] = bool(payload.get("disabled"))
     update_payload["updated_by_id"] = uid
-    updated = repo.update_agent(agent_id=agent_id, payload=update_payload, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=agent_table)
+    updated = repo.update_agent(agent_id=agent_id, payload=update_payload, tenant_id=str(
+        row.get("tenant_id") or tenant_id), table_name=agent_table)
     mcp_ids = payload.get("mcp_agent_ids")
     if isinstance(mcp_ids, list):
-        current = mcp_rel_repo.list_agent_mcp(agent_id=agent_id, table_name=_tables()["agent_mcp"])
+        current = mcp_rel_repo.list_agent_mcp(
+            agent_id=agent_id, table_name=_tables()["agent_mcp"])
         current_ids = {int(x.get("mcp_agent_id")) for x in current}
         target_ids: set[int] = set()
         for x in mcp_ids:
@@ -164,20 +171,25 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         to_add = target_ids - current_ids
         to_del = current_ids - target_ids
         for mid in to_add:
-            mcp_rel_repo.create_agent_mcp(payload={"agent_id": agent_id, "mcp_agent_id": mid}, table_name=_tables()["agent_mcp"])
+            mcp_rel_repo.create_agent_mcp(payload={
+                                          "agent_id": agent_id, "mcp_agent_id": mid}, table_name=_tables()["agent_mcp"])
         for mid in to_del:
-            mcp_rel_repo.delete_agent_mcp_by_pair(agent_id=agent_id, mcp_agent_id=mid, table_name=_tables()["agent_mcp"])
+            mcp_rel_repo.delete_agent_mcp_by_pair(
+                agent_id=agent_id, mcp_agent_id=mid, table_name=_tables()["agent_mcp"])
     doc_ids = payload.get("document_ids")
     if isinstance(doc_ids, list):
-        current_d = doc_rel_repo.list_agent_documents(agent_id=agent_id, table_name=_tables()["agent_document"])
+        current_d = doc_rel_repo.list_agent_documents(
+            agent_id=agent_id, table_name=_tables()["agent_document"])
         current_doc_ids = {str(x.get("document_id")) for x in current_d}
         target_doc_ids: set[str] = {str(x) for x in doc_ids}
         to_add_d = target_doc_ids - current_doc_ids
         to_del_d = current_doc_ids - target_doc_ids
         for did in to_add_d:
-            doc_rel_repo.create_agent_document(payload={"agent_id": agent_id, "document_id": did}, table_name=_tables()["agent_document"])
+            doc_rel_repo.create_agent_document(payload={
+                                               "agent_id": agent_id, "document_id": did}, table_name=_tables()["agent_document"])
         for did in to_del_d:
-            doc_rel_repo.delete_agent_document_by_pair(agent_id=agent_id, document_id=did, table_name=_tables()["agent_document"])
+            doc_rel_repo.delete_agent_document_by_pair(
+                agent_id=agent_id, document_id=did, table_name=_tables()["agent_document"])
     return updated
 
 
@@ -185,7 +197,8 @@ def update_agent_api_keys_service(*, agent_id: int, api_name: Optional[str], api
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(
+        agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
@@ -198,15 +211,13 @@ def delete_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(
+        agent_id=agent_id, table_name=agent_table)
     if not row:
         return False
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
     return repo.delete_agent(agent_id=agent_id, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=agent_table)
-
-
-    
 
 
 def list_agents_service(
@@ -216,27 +227,37 @@ def list_agents_service(
     uid = _current_user_id(claims)
     s = get_settings()
     user_table = getattr(s, "user_table_name", "users")
-    user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
+    user_info = user_repo.get_user_by_id(
+        user_id=uid, tenant_id=tenant_id, table_name=user_table)
     agent_table = _tables()["agent"]
     if type == "self":
-        rows, total = repo.list_self_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
+        rows, total = repo.list_self_agents(
+            page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
     elif type == "tenant":
         user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
-        rows, total = repo.list_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, tenant_id=user_tid, table_name=agent_table)
+        rows, total = repo.list_agents(page=page, per_page=per_page, sort=sort,
+                                       order=order, q=q, tenant_id=user_tid, table_name=agent_table)
     else:
-        raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant'")
+        raise HTTPException(
+            status_code=400, detail="type 必须是 'self' 或 'tenant'")
     for r in rows:
         r.pop("api_name", None)
         r.pop("api_key", None)
-        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
-        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()[
+                                            "agent_mcp"]) if r.get("id") is not None else []
+        m_ids = [int(x.get("mcp_agent_id"))
+                     for x in rel_m if x.get("mcp_agent_id") is not None]
         m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
-        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
-        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(
+            x.get("name") or "")} for x in m_rows]
+        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()[
+                                                  "agent_document"]) if r.get("id") is not None else []
+        d_ids = [str(x.get("document_id"))
+                     for x in rel_d if x.get("document_id")]
         doc_items: List[Dict[str, Any]] = []
         for did in d_ids:
-            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables()["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
+            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables(
+            )["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
             doc_items.append({"id": did, "name": str(d.get("title") or "")})
         r["documents"] = doc_items
     return rows, total
@@ -267,7 +288,8 @@ def list_accessible_agents_service(
     uid = _current_user_id(claims)
     s = get_settings()
     user_table = getattr(s, "user_table_name", "users")
-    user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
+    user_info = user_repo.get_user_by_id(
+        user_id=uid, tenant_id=tenant_id, table_name=user_table)
     # 提取用户角色与租户，用于权限判定
     user_role = str((user_info or {}).get("role") or "")
     user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
@@ -289,15 +311,21 @@ def list_accessible_agents_service(
         # 隐藏敏感字段
         r.pop("api_name", None)
         r.pop("api_key", None)
-        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
-        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()[
+                                            "agent_mcp"]) if r.get("id") is not None else []
+        m_ids = [int(x.get("mcp_agent_id"))
+                     for x in rel_m if x.get("mcp_agent_id") is not None]
         m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
-        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
-        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(
+            x.get("name") or "")} for x in m_rows]
+        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()[
+                                                  "agent_document"]) if r.get("id") is not None else []
+        d_ids = [str(x.get("document_id"))
+                     for x in rel_d if x.get("document_id")]
         doc_items: List[Dict[str, Any]] = []
         for did in d_ids:
-            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables()["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
+            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables(
+            )["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
             doc_items.append({"id": did, "name": str(d.get("title") or "")})
         r["documents"] = doc_items
     return rows, total
@@ -315,7 +343,8 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(
+        agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
     if not _check_agent_permission(row, uid, tenant_id):
@@ -336,15 +365,19 @@ def ensure_agent_access_service(*, agent_id: int, tenant_id: str, claims: Option
     - `HTTPException(401)`：鉴权缺失或非法（由内部工具抛出）
     - `HTTPException(404)`：智能体不存在
     """
+    logger = setup_logging(
+        level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    row = repo.get_agent_by_id_any_tenant(
+        agent_id=agent_id, table_name=agent_table)
     if not row:
         raise HTTPException(status_code=404, detail="Agent不存在")
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
     return row
+
 
 def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Optional[Dict[str, Any]]:
     """按 API 凭证查询智能体
@@ -356,17 +389,27 @@ def get_agent_by_api_credentials_service(*, api_name: str, api_key: str) -> Opti
     说明：
     - 此函数不进行用户权限校验，适用于凭证直连场景
     """
+    logger = setup_logging(
+        level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(
+        f"进入 [get_agent_by_api_credentials_service] api_name={api_name}")
     agent_table = _tables()["agent"]
-    row = repo.get_agent_by_api_credentials_any_tenant(api_name=api_name, api_key=api_key, table_name=agent_table)
+    row = repo.get_agent_by_api_credentials_any_tenant(
+        api_name=api_name, api_key=api_key, table_name=agent_table)
     if not row:
+        logger.debug(f"完成 [get_agent_by_api_credentials_service] result=None")
         return None
     try:
         if int(row.get("disabled") or 0) == 1:
+            logger.debug(
+                f"完成 [get_agent_by_api_credentials_service] disabled=1")
             return None
     except Exception:
         pass
+    logger.debug(
+        f"完成 [get_agent_by_api_credentials_service] agent_id={row.get('id')}")
     return row
-    
+
 
 def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: str, output_text: str, meta: Optional[Dict[str, Any]] = None, ttl: int = 3600) -> None:
     """
@@ -382,6 +425,10 @@ def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: s
     - 此函数将会话记录以 JSON 格式存储到 Redis 中，键为 `record:{agent_id}:{record_id}:{timestamp}:{session_id}`
     - 同时将记录发布到 RabbitMQ 队列 `chat_persist_tasks`，用于异步处理
     """
+    logger = setup_logging(
+        level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(
+        f"进入 [persist_chat_to_cache_and_mq] agent_id={agent_id} record_id={record_id}")
     try:
         ts = int(time.time())
     except Exception:
@@ -401,9 +448,12 @@ def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: s
     except Exception:
         pass
     try:
-        publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
+        publish_to_rabbitmq("chat_persist_tasks", {"redis_key": key, "agent_id": int(
+            agent_id), "record_id": int(record_id), "session_id": key, "created_at": ts}, durable=True)
     except Exception:
         pass
+    logger.debug(f"完成 [persist_chat_to_cache_and_mq] key={key}")
+
 
 def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     """
@@ -420,12 +470,16 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
     - 若 LLM 配置失败，会返回包含错误信息的 SSE 响应
     - 每个回复片段生成后，会将记录持久化到 Redis 缓存和 RabbitMQ 消息队列
     """
-    
+
+    logger = setup_logging(
+        level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(
+        f"进入 [agent_llm_answer_stream] agent_id={agent_id} record_id={record_id}")
     settings = get_settings()
     llm = get_model(settings=settings, streaming=True)
     prompt = ChatPromptTemplate.from_messages([
         ("system", RAG_ANSWER_SYSTEM_PROMPT),
-        ("human", "用户问题：{message}\n候选文档：\n{doc}\n历史上下文：\n{history}"),
+        ("human", "用户问题：{message}\n历史上下文：\n{history}\n候选文档：\n{doc}"),
     ])
     if llm is None:
         def _fallback() -> Iterator[str]:
@@ -436,13 +490,24 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                 yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
             except Exception:
                 yield f"data: {json.dumps({'record_id': record_id})}\n\n"
-            yield f"data: {content}\n\n"
-            persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=content, meta=meta)
+            lines = content.split("\n")
+            frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
+            yield frame
+            persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(
+                record_id), input_text=str(out.get("message") or ""), output_text=content, meta=meta)
             yield "data: [DONE]\n\n"
+            logger.debug(
+                f"完成 [agent_llm_answer_stream] record_id={record_id}")
         return _fallback()
     chain = prompt | llm
+
     def _gen() -> Iterator[str]:
         acc = ""
+        buf = ""
+        last_emit = time.time()
+        settings_local = settings
+        FLUSH_MS = float(getattr(settings_local, "sse_flush_ms", 0.08) or 0.08)
+        MAX_BUF = int(getattr(settings_local, "sse_max_buf", 64) or 64)
         try:
             yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
         except Exception:
@@ -459,13 +524,27 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                     content = str(chunk)
                 if content:
                     acc += content
-                    yield f"data: {content}\n\n"
+                    buf += content
+                    now = time.time()
+                    should_flush = (len(buf) >= MAX_BUF) or ("\n" in content) or ((now - last_emit) >= FLUSH_MS)
+                    if should_flush and buf.strip() != "":
+                        lines = buf.split("\n")
+                        frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
+                        yield frame
+                        buf = ""
+                        last_emit = now
         except Exception:
             yield "data: 服务暂时不可用，请稍后重试\n\n"
+        if buf.strip() != "":
+            lines = buf.split("\n")
+            frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
+            yield frame
         # 持久化到缓存和mq
         persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=acc, meta=meta)
         yield "data: [DONE]\n\n"
+        logger.debug(f"完成 [agent_llm_answer_stream] record_id={record_id}")
     return _gen()
+
 
 def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     """
@@ -482,19 +561,16 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int=-1, meta: 
     - 若 LLM 配置失败，会返回包含错误信息的 SSE 响应
     - 每个回复片段生成后，会将记录持久化到 Redis 缓存和 RabbitMQ 消息队列
     """
-    logger = setup_logging()
-
-    logger.info(f" 进入 [agent_chat_service]")
+    logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(f"进入 [agent_chat_service] agent_id={agent_id} record_id={record_id}")
 
     # 调用 rag 召回流程 获取相关信息:
     out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta)
-
-
-
 
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:
         pass
+
+    logger.debug(f" 完成 [agent_chat_get_rag],  继续 [agent_chat_service] rag_ready record_id={record_id}")
     return agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
-    
