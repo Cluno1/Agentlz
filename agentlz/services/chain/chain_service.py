@@ -146,6 +146,8 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     ctx = ChainContext(user_input)
     ctx.current_task = str(user_input)
     ctx.sse_emitter = emit
+    # 从 JWT claims 注入当前用户 ID（供 Planner 检索个人 MCP）
+    ctx.user_id = int(claims.get("sub")) if isinstance(claims, dict) and str(claims.get("sub", "")).isdigit() else None
     s = get_settings()
     user_max = int(max_steps or 6)
     hard_limit = int(getattr(s, "chain_hard_limit", 20))

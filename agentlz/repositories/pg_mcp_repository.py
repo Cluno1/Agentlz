@@ -11,6 +11,8 @@ def _to_vector_literal(vec: Sequence[float]) -> str:
     """将 Python 向量序列化为 pgvector 字面量，例如 "[0.1,0.2]"。"""
     return "[" + ",".join(str(float(x)) for x in vec) + "]"
 
+def _to_bigint_array_literal(ids: Sequence[int]) -> str:
+    return "{" + ",".join(str(int(i)) for i in ids) + "}"
 
 def _ensure_pg_schema(conn) -> None:
     """确保 pgvector 扩展、`mcp_agents_vec` 表与向量索引存在。
@@ -72,13 +74,17 @@ def search_ids_by_vector(embedding: Sequence[float], k: int = 5) -> List[int]:
 
 def search_mcp_hybrid_pg(
     *,
-    tenant_id: str,
     query_vec: Sequence[float],
     alpha: float = 0.7,
     theta: float = 0.75,
     N: int = 50,
     k: int = 10,
+    allowed_ids: Sequence[int] | None = None,
 ) -> List[Dict[str, Any]]:
+    """在 PG 上执行候选限制 + 语义/可信度混合排序。
+
+    当 allowed_ids 非空时，仅在该小集合内进行 Top‑N → 归一化 → 融合排序 → 阈值过滤 → Top‑k。
+    """
     """混合排序：语义 Top‑N → 可信度归一化 → 融合打分 → 语义门槛 → Top‑k。
 
     - 语义分：`sem_score = 1 - (embedding <=> query_vec)`（夹紧到 [0,1]）
@@ -87,11 +93,12 @@ def search_mcp_hybrid_pg(
     - 门槛：`WHERE sem_score >= theta` 保证相关性
     """
     # 使用驱动层原生占位符（psycopg2：%s）以避免在 PostgreSQL 中出现":"语法错误
-    sql = (
+    base = (
         """
         WITH candidates AS (
           SELECT id, name, transport, command, description, trust_score, embedding
           FROM mcp_agents_vec
+          {where_clause}
           ORDER BY embedding <=> %s::vector
           LIMIT %s
         ),
@@ -117,10 +124,14 @@ def search_mcp_hybrid_pg(
     with engine.connect() as conn:
         # 使用 exec_driver_sql 走底层驱动，以确保 %s 占位符按顺序绑定
         v = _to_vector_literal(query_vec)
-        rows = conn.exec_driver_sql(
-            sql,
-            (v, int(N), v, float(alpha), float(alpha), float(theta), int(k)),
-        ).mappings().all()
+        if allowed_ids and len(allowed_ids) > 0:
+            arr = _to_bigint_array_literal(allowed_ids)
+            sql = base.format(where_clause="WHERE id = ANY(%s::bigint[])")
+            args = (arr, v, int(N), v, float(alpha), float(alpha), float(theta), int(k))
+        else:
+            sql = base.format(where_clause="")
+            args = (v, int(N), v, float(alpha), float(alpha), float(theta), int(k))
+        rows = conn.exec_driver_sql(sql, args).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -130,4 +141,12 @@ def update_trust_score_pg(agent_id: int, trust_score: float) -> None:
         conn.execute(
             text("UPDATE mcp_agents_vec SET trust_score=:s WHERE id=:id"),
             {"id": int(agent_id), "s": float(trust_score)},
+        )
+
+def delete_mcp_agent_vector(agent_id: int) -> None:
+    engine = get_pg_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM mcp_agents_vec WHERE id=:id"),
+            {"id": int(agent_id)},
         )

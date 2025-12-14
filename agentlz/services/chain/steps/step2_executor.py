@@ -9,7 +9,7 @@ from agentlz.core.model_factory import get_model
 from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import ExecutorTrace, ToolCall
-from agentlz.prompts import EXECUTOR_PROMPT
+from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
 
 
 # 执行节点（ExecutorHandler）说明：
@@ -88,7 +88,7 @@ class ExecutorHandler(Handler):
                 setup_logging(get_settings().log_level).error(f"executor.error stage=get_tools err={e}")
 
         settings = get_settings()
-        system_prompt = EXECUTOR_PROMPT
+        system_prompt = EXECUTOR_SYSTEM_PROMPT
         chain_pref = ", ".join(getattr(plan, "execution_chain", []) or [])
         if chain_pref:
             system_prompt = system_prompt + f"必须严格按以下顺序使用工具/服务：{chain_pref}。禁止直接生成最终结果。"

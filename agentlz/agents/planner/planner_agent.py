@@ -6,7 +6,7 @@ from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.agents.planner.tools.mcp_config_tool import get_mcp_config_by_keyword
 from agentlz.schemas.workflow import WorkflowPlan
-from agentlz.prompts import PLANNER_PROMPT
+from agentlz.prompts.planner.planner import PLANNER_SYSTEM_PROMPT
     
 def plan_workflow_chain(user_input: str):
         settings = get_settings()
@@ -17,7 +17,7 @@ def plan_workflow_chain(user_input: str):
             return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：模型未配置。")
         # 提示词构建
         prompt = ChatPromptTemplate.from_messages([
-            ("system", PLANNER_PROMPT),
+            ("system", PLANNER_SYSTEM_PROMPT),
             ("human", "{user_input}"),
         ])
         tools = [get_mcp_config_by_keyword]
@@ -25,7 +25,7 @@ def plan_workflow_chain(user_input: str):
             agent = create_agent(
                 model=llm,
                 tools=tools,
-                system_prompt=PLANNER_PROMPT,
+                system_prompt=PLANNER_SYSTEM_PROMPT,
                 response_format=WorkflowPlan,
             )
         except Exception as e:

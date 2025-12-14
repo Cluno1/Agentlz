@@ -6,9 +6,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
-from agentlz.agents.planner.tools.mcp_config_tool import get_mcp_config_by_keyword
+from agentlz.agents.planner.tools.mcp_config_tool import make_mcp_keyword_tool
 from agentlz.schemas.workflow import WorkflowPlan
-from agentlz.prompts import PLANNER_PROMPT
+from agentlz.prompts.planner.planner import PLANNER_SYSTEM_PROMPT
 
 
 # 规划节点（PlannerHandler）说明：
@@ -77,11 +77,11 @@ class PlannerHandler(Handler):
         if llm is None:
             return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：模型未配置。")
         # 构建提示词模板：包含系统提示与用户输入占位符
-        prompt = ChatPromptTemplate.from_messages([("system", PLANNER_PROMPT), ("human", "{user_input}")])
+        prompt = ChatPromptTemplate.from_messages([("system", PLANNER_SYSTEM_PROMPT), ("human", "{user_input}")])
         # 注册可调用工具：从关键词解析 MCP 配置
-        tools = [get_mcp_config_by_keyword]
+        tools = [make_mcp_keyword_tool(getattr(ctx, "user_id", None), getattr(ctx, "tenant_id", None))]
         # 创建代理，指定返回结构化 `WorkflowPlan`
-        agent = create_agent(model=llm, tools=tools, system_prompt=PLANNER_PROMPT, response_format=WorkflowPlan)
+        agent = create_agent(model=llm, tools=tools, system_prompt=PLANNER_SYSTEM_PROMPT, response_format=WorkflowPlan)
         # 格式化对话，取最后一条人类消息作为输入
         formatted_msgs = prompt.format_messages(user_input=str(ctx.user_input))
         user_msg = formatted_msgs[-1]

@@ -43,7 +43,9 @@ def _sanitize_sort(sort_field: str) -> str:
     return SORT_MAPPING.get(sort_field, "id")
 
 
-def list_agents(
+
+
+def list_agents_agg(
     *,
     page: int,
     per_page: int,
@@ -51,49 +53,185 @@ def list_agents(
     order: str,
     q: Optional[str],
     tenant_id: str,
-    table_name: str,
+    agent_table_name: str,
+    mcp_rel_table_name: str,
+    mcp_table_name: str,
+    agent_doc_table_name: str,
+    doc_table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """分页查询 agent 列表，返回 (rows, total)。
-
-    - 按 `tenant_id` 强制过滤实现多租户隔离
-    - 支持按 `name` 模糊查询
-    - 排序字段通过白名单映射，避免注入
-    """
-    # 排序方向校正（仅允许 ASC/DESC）
     order_dir = "ASC" if order.upper() == "ASC" else "DESC"
-    # 排序字段白名单映射
     sort_col = _sanitize_sort(sort)
-    # 计算分页偏移量
     offset = (page - 1) * per_page
-
-    # 基础多租户隔离条件
     where = ["tenant_id = :tenant_id"]
-    # 绑定参数（使用参数化避免 SQL 注入）
     params: Dict[str, Any] = {"tenant_id": tenant_id}
     if q:
-        # 支持名称模糊匹配
         where.append("(name LIKE :q)")
         params["q"] = f"%{q}%"
     where_sql = "WHERE " + " AND ".join(where)
-
-    # 统计总数与列表查询 SQL（包含排序与分页）
-    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{agent_table_name}` {where_sql}")
     list_sql = text(
         f"""
-        SELECT id, name, description, api_name, api_key, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
-        FROM `{table_name}`
-        {where_sql}
-        ORDER BY {sort_col} {order_dir}
-        LIMIT :limit OFFSET :offset
+        SELECT 
+            b.id, b.name, b.description, b.tenant_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
+            COALESCE(mcps.mcp_ids, '') AS mcp_ids,
+            COALESCE(mcps.mcp_names, '') AS mcp_names,
+            COALESCE(docs.doc_ids, '') AS doc_ids,
+            COALESCE(docs.doc_titles, '') AS doc_titles
+        FROM (
+            SELECT id, name, description, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+            FROM `{agent_table_name}`
+            {where_sql}
+            ORDER BY {sort_col} {order_dir}
+            LIMIT :limit OFFSET :offset
+        ) AS b
+        LEFT JOIN (
+            SELECT am.agent_id,
+                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR ',') AS mcp_ids,
+                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR ',') AS mcp_names
+            FROM `{mcp_rel_table_name}` am
+            JOIN `{mcp_table_name}` ma ON ma.id = am.mcp_agent_id
+            GROUP BY am.agent_id
+        ) AS mcps ON mcps.agent_id = b.id
+        LEFT JOIN (
+            SELECT ad.agent_id,
+                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR ',') AS doc_ids,
+                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR ',') AS doc_titles
+            FROM `{agent_doc_table_name}` ad
+            JOIN `{doc_table_name}` d ON d.id = ad.document_id
+            GROUP BY ad.agent_id
+        ) AS docs ON docs.agent_id = b.id
         """
     )
-
     engine = get_mysql_engine()
     with engine.connect() as conn:
-        # 执行统计与列表查询
         total = conn.execute(count_sql, params).scalar() or 0
         rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
     return [dict(r) for r in rows], int(total)
+
+
+def list_self_agents_agg(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    q: Optional[str],
+    user_id: int,
+    agent_table_name: str,
+    mcp_rel_table_name: str,
+    mcp_table_name: str,
+    agent_doc_table_name: str,
+    doc_table_name: str,
+) -> Tuple[List[Dict[str, Any]], int]:
+    order_dir = "ASC" if order.upper() == "ASC" else "DESC"
+    sort_col = sort if sort in {"id", "name", "description", "disabled", "created_at", "updated_at", "created_by_id", "updated_by_id"} else "id"
+    offset = (page - 1) * per_page
+    where = ["tenant_id = :tenant_id", "created_by_id = :uid"]
+    params: Dict[str, Any] = {"tenant_id": "default", "uid": int(user_id)}
+    if q:
+        where.append("(name LIKE :q)")
+        params["q"] = f"%{q}%"
+    where_sql = "WHERE " + " AND ".join(where)
+    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{agent_table_name}` {where_sql}")
+    list_sql = text(
+        f"""
+        SELECT 
+            b.id, b.name, b.description, b.tenant_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
+            COALESCE(mcps.mcp_ids, '') AS mcp_ids,
+            COALESCE(mcps.mcp_names, '') AS mcp_names,
+            COALESCE(docs.doc_ids, '') AS doc_ids,
+            COALESCE(docs.doc_titles, '') AS doc_titles
+        FROM (
+            SELECT id, name, description, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+            FROM `{agent_table_name}`
+            {where_sql}
+            ORDER BY {sort_col} {order_dir}
+            LIMIT :limit OFFSET :offset
+        ) AS b
+        LEFT JOIN (
+            SELECT am.agent_id,
+                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR ',') AS mcp_ids,
+                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR ',') AS mcp_names
+            FROM `{mcp_rel_table_name}` am
+            JOIN `{mcp_table_name}` ma ON ma.id = am.mcp_agent_id
+            GROUP BY am.agent_id
+        ) AS mcps ON mcps.agent_id = b.id
+        LEFT JOIN (
+            SELECT ad.agent_id,
+                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR ',') AS doc_ids,
+                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR ',') AS doc_titles
+            FROM `{agent_doc_table_name}` ad
+            JOIN `{doc_table_name}` d ON d.id = ad.document_id
+            GROUP BY ad.agent_id
+        ) AS docs ON docs.agent_id = b.id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        total = conn.execute(count_sql, params).scalar() or 0
+        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
+    return [dict(r) for r in rows], int(total)
+
+
+def get_agent_with_user_and_perm(
+    *,
+    agent_id: int,
+    user_id: int,
+    agent_table_name: str,
+    user_table_name: str,
+    perm_table_name: str,
+) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT 
+            a.id, a.name, a.description, a.api_name, a.api_key, a.tenant_id, a.created_at, a.created_by_id, a.updated_at, a.updated_by_id, a.disabled,
+            u.role AS user_role,
+            u.tenant_id AS user_tenant_id,
+            up.perm AS user_perm
+        FROM `{agent_table_name}` a
+        LEFT JOIN `{user_table_name}` u ON u.id = :uid
+        LEFT JOIN `{perm_table_name}` up ON up.agent_id = a.id AND up.user_id = :uid
+        WHERE a.id = :aid
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"aid": int(agent_id), "uid": int(user_id)}).mappings().first()
+    return dict(row) if row else None
+
+
+def update_agent_no_read(
+    *,
+    agent_id: int,
+    payload: Dict[str, Any],
+    tenant_id: str,
+    table_name: str,
+) -> bool:
+    allowed_cols = [
+        "name",
+        "description",
+        "api_name",
+        "api_key",
+        "disabled",
+        "created_by_id",
+        "updated_by_id",
+    ]
+    sets: List[str] = []
+    params: Dict[str, Any] = {"id": int(agent_id), "tenant_id": str(tenant_id)}
+    for col in allowed_cols:
+        if col in payload and payload[col] is not None:
+            val = payload[col]
+            if col == "disabled":
+                val = int(bool(val))
+            sets.append(f"{col} = :{col}")
+            params[col] = val
+    if not sets:
+        return True
+    sql = text(f"UPDATE `{table_name}` SET " + ", ".join(sets) + " WHERE id = :id AND tenant_id = :tenant_id")
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        result = conn.execute(sql, params)
+        return result.rowcount > 0
 
 
 def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:

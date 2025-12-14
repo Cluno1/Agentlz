@@ -173,14 +173,32 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
 def update_agent_api_keys_service(*, agent_id: int, api_name: Optional[str], api_key: Optional[str], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
-    agent_table = _tables()["agent"]
-    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    tbls = _tables()
+    agent_table = tbls["agent"]
+    user_table = tbls["user"]
+    perm_table = tbls["user_agent_perm"]
+    row = repo.get_agent_with_user_and_perm(agent_id=agent_id, user_id=uid, agent_table_name=agent_table, user_table_name=user_table, perm_table_name=perm_table)
     if not row:
         return None
-    if not _check_agent_permission(row, uid, tenant_id):
+    created_by_id = int(row.get("created_by_id") or 0)
+    agent_tid = str(row.get("tenant_id") or "")
+    user_role = str(row.get("user_role") or "")
+    user_tid = str(row.get("user_tenant_id") or "")
+    user_perm = str(row.get("user_perm") or "")
+    allowed = False
+    if created_by_id == uid:
+        allowed = True
+    elif user_role == "admin" and agent_tid != "default" and user_tid == agent_tid:
+        allowed = True
+    elif user_role == "user" and user_perm in ("admin", "write"):
+        allowed = True
+    if not allowed:
         raise HTTPException(status_code=403, detail="没有权限")
     payload = {"api_name": api_name, "api_key": api_key, "updated_by_id": uid}
-    return repo.update_agent(agent_id=agent_id, payload=payload, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=agent_table)
+    ok = repo.update_agent_no_read(agent_id=agent_id, payload=payload, tenant_id=agent_tid or tenant_id, table_name=agent_table)
+    if not ok:
+        return None
+    return {"id": int(agent_id), "api_name": api_name, "updated_by_id": uid}
 
 
 def delete_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> bool:
@@ -195,34 +213,9 @@ def delete_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict
     return repo.delete_agent(agent_id=agent_id, tenant_id=str(row.get("tenant_id") or tenant_id), table_name=agent_table)
 
 
-def _list_self_agents(*, page: int, per_page: int, sort: str, order: str, q: Optional[str], user_id: int, table_name: str) -> Tuple[List[Dict[str, Any]], int]:
-    order_dir = "ASC" if str(order or "").upper() == "ASC" else "DESC"
-    sort_col = sort if sort in {"id", "name", "description", "disabled", "created_at", "updated_at", "created_by_id", "updated_by_id"} else "id"
-    offset = (page - 1) * per_page
-    where = ["tenant_id = :tenant_id", "created_by_id = :uid"]
-    params: Dict[str, Any] = {"tenant_id": "default", "uid": int(user_id)}
-    if q:
-        where.append("(name LIKE :q)")
-        params["q"] = f"%{q}%"
-    where_sql = "WHERE " + " AND ".join(where)
-    count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
-    list_sql = text(
-        f"""
-        SELECT id, name, description, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
-        FROM `{table_name}`
-        {where_sql}
-        ORDER BY {sort_col} {order_dir}
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    engine = get_mysql_engine()
-    with engine.connect() as conn:
-        total = conn.execute(count_sql, params).scalar() or 0
-        rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
-    return [dict(r) for r in rows], int(total)
 
 
-def list_agents_service(
+def list_agents_service_agg(
     *, page: int, per_page: int, sort: str, order: str, q: Optional[str], type: str, tenant_id: str, claims: Optional[Dict[str, Any]] = None
 ) -> Tuple[List[Dict[str, Any]], int]:
     _ensure_authenticated(claims)
@@ -231,28 +224,66 @@ def list_agents_service(
     user_table = getattr(s, "user_table_name", "users")
     user_info = user_repo.get_user_by_id(user_id=uid, tenant_id=tenant_id, table_name=user_table)
     agent_table = _tables()["agent"]
-    if type == "self":
-        rows, total = _list_self_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
-    elif type == "tenant":
+    mcp_rel_tbl = _tables()["agent_mcp"]
+    agent_doc_tbl = _tables()["agent_document"]
+    doc_tbl = _tables()["doc"]
+    mcp_tbl = "mcp_agents"
+    if type == "tenant":
         user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
-        rows, total = repo.list_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, tenant_id=user_tid, table_name=agent_table)
+        rows, total = repo.list_agents_agg(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            tenant_id=user_tid,
+            agent_table_name=agent_table,
+            mcp_rel_table_name=mcp_rel_tbl,
+            mcp_table_name=mcp_tbl,
+            agent_doc_table_name=agent_doc_tbl,
+            doc_table_name=doc_tbl,
+        )
+    elif type == "self":
+        rows, total = repo.list_self_agents_agg(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            user_id=uid,
+            agent_table_name=agent_table,
+            mcp_rel_table_name=mcp_rel_tbl,
+            mcp_table_name=mcp_tbl,
+            agent_doc_table_name=agent_doc_tbl,
+            doc_table_name=doc_tbl,
+        )
     else:
         raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant'")
+    out_rows: List[Dict[str, Any]] = []
     for r in rows:
-        r.pop("api_name", None)
-        r.pop("api_key", None)
-        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
-        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
-        m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
-        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
-        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
-        doc_items: List[Dict[str, Any]] = []
-        for did in d_ids:
-            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables()["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
-            doc_items.append({"id": did, "name": str(d.get("title") or "")})
-        r["documents"] = doc_items
-    return rows, total
+        m_ids_str = str(r.get("mcp_ids") or "")
+        m_names_str = str(r.get("mcp_names") or "")
+        d_ids_str = str(r.get("doc_ids") or "")
+        d_titles_str = str(r.get("doc_titles") or "")
+        m_ids = [x for x in m_ids_str.split(",") if x]
+        m_names = [x for x in m_names_str.split(",")]
+        d_ids = [x for x in d_ids_str.split(",") if x]
+        d_titles = [x for x in d_titles_str.split(",")]
+        m_list: List[Dict[str, Any]] = []
+        for i in range(min(len(m_ids), len(m_names))):
+            try:
+                mid = int(m_ids[i])
+            except Exception:
+                continue
+            m_list.append({"id": mid, "name": m_names[i]})
+        d_list: List[Dict[str, Any]] = []
+        for i in range(min(len(d_ids), len(d_titles))):
+            d_list.append({"id": d_ids[i], "name": d_titles[i]})
+        r2 = {k: v for k, v in r.items() if k not in {"api_name", "api_key", "mcp_ids", "mcp_names", "doc_ids", "doc_titles"}}
+        r2["mcp_agents"] = m_list
+        r2["documents"] = d_list
+        out_rows.append(r2)
+    return out_rows, total
 
 
 def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -265,3 +296,107 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
     return row
+
+
+def set_agent_mcp_allow_service(*, agent_id: int, mcp_agent_ids: List[int], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """设置勾选的 MCP 列表（覆盖原有设置）。
+
+    - 权限：创建者、管理员（同租户非 default）、或具备 write/admin 权限的用户。
+    - 行为：清空现有关联，批量插入传入的 ID 作为允许集（不写 permission_type）。
+    - 返回：{"agent_id": int, "affected": int, "mode": "ALLOW"}
+    """
+    _ensure_authenticated(claims)
+    uid = _current_user_id(claims)
+    agent_table = _tables()["agent"]
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent不存在")
+    if not _check_agent_permission(row, uid, tenant_id):
+        raise HTTPException(status_code=403, detail="没有权限")
+    tbl = _tables()["agent_mcp"]
+    try:
+        mcp_rel_repo.clear_agent_mcp(agent_id=agent_id, table_name=tbl)
+        uniq_ids: List[int] = []
+        seen: set[int] = set()
+        for x in mcp_agent_ids or []:
+            try:
+                xi = int(x)
+            except Exception:
+                continue
+            if xi in seen:
+                continue
+            seen.add(xi)
+            uniq_ids.append(xi)
+        inserted = mcp_rel_repo.bulk_insert_agent_mcp(agent_id=agent_id, ids=uniq_ids, table_name=tbl, permission_type=None)
+        return {"agent_id": int(agent_id), "affected": int(inserted), "mode": "ALLOW"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"设置勾选失败: {e}")
+
+
+def set_agent_mcp_exclude_service(*, agent_id: int, mcp_agent_ids: List[int], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """设置排除的 MCP 列表（增量排除）。
+
+    - 依赖：表存在列 permission_type/is_default；否则返回 DDL 建议。
+    - 行为：批量插入 EXCLUDE 行（不清空允许集）。
+    - 返回：{"agent_id": int, "affected": int, "mode": "EXCLUDE"}
+    """
+    _ensure_authenticated(claims)
+    uid = _current_user_id(claims)
+    agent_table = _tables()["agent"]
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent不存在")
+    if not _check_agent_permission(row, uid, tenant_id):
+        raise HTTPException(status_code=403, detail="没有权限")
+    tbl = _tables()["agent_mcp"]
+    try:
+        uniq_ids: List[int] = []
+        seen: set[int] = set()
+        for x in mcp_agent_ids or []:
+            try:
+                xi = int(x)
+            except Exception:
+                continue
+            if xi in seen:
+                continue
+            seen.add(xi)
+            uniq_ids.append(xi)
+        inserted = mcp_rel_repo.bulk_insert_agent_mcp(agent_id=agent_id, ids=uniq_ids, table_name=tbl, permission_type="EXCLUDE")
+        if inserted == 0 and len(uniq_ids) > 0:
+            return {
+                "agent_id": int(agent_id),
+                "affected": 0,
+                "mode": "EXCLUDE",
+                "error": "agent_mcp 缺少列 permission_type/is_default，请执行: ALTER TABLE agent_mcp ADD COLUMN permission_type ENUM('ALLOW','EXCLUDE') NOT NULL DEFAULT 'ALLOW'; ALTER TABLE agent_mcp ADD COLUMN is_default TINYINT(1) NOT NULL DEFAULT 1;",
+            }
+        return {"agent_id": int(agent_id), "affected": int(inserted), "mode": "EXCLUDE"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"设置排除失败: {e}")
+
+
+def reset_agent_mcp_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """恢复默认 MCP 配置（清空 agent_mcp）。
+
+    - 行为：删除该 Agent 的所有关联行，恢复全量可用。
+    - 返回：{"agent_id": int, "affected": int, "mode": "RESET"}
+    """
+    _ensure_authenticated(claims)
+    uid = _current_user_id(claims)
+    agent_table = _tables()["agent"]
+    row = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent不存在")
+    if not _check_agent_permission(row, uid, tenant_id):
+        raise HTTPException(status_code=403, detail="没有权限")
+    tbl = _tables()["agent_mcp"]
+    try:
+        deleted = mcp_rel_repo.clear_agent_mcp(agent_id=agent_id, table_name=tbl)
+        return {"agent_id": int(agent_id), "affected": int(deleted), "mode": "RESET"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"恢复默认失败: {e}")

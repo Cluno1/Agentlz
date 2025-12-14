@@ -76,18 +76,32 @@ def create_agent_mcp(
     """创建关联并回读插入后的完整记录。"""
     # 记录创建时间（UTC）
     now = datetime.now(timezone.utc)
-    sql = text(
-        f"""
-        INSERT INTO `{table_name}`
-        (agent_id, mcp_agent_id, created_at)
-        VALUES (:agent_id, :mcp_agent_id, :created_at)
-        """
-    )
+    # 可选列：permission_type/is_default 若存在则插入
+    perm = payload.get("permission_type")
+    is_def = payload.get("is_default")
+    if perm is not None or is_def is not None:
+        sql = text(
+            f"""
+            INSERT INTO `{table_name}`
+            (agent_id, mcp_agent_id, created_at, permission_type, is_default)
+            VALUES (:agent_id, :mcp_agent_id, :created_at, :permission_type, :is_default)
+            """
+        )
+    else:
+        sql = text(
+            f"""
+            INSERT INTO `{table_name}`
+            (agent_id, mcp_agent_id, created_at)
+            VALUES (:agent_id, :mcp_agent_id, :created_at)
+            """
+        )
     # 参数化插入
     params = {
         "agent_id": payload.get("agent_id"),
         "mcp_agent_id": payload.get("mcp_agent_id"),
         "created_at": now,
+        "permission_type": payload.get("permission_type") if perm is not None else None,
+        "is_default": int(payload.get("is_default")) if is_def is not None else None,
     }
     engine = get_mysql_engine()
     with engine.begin() as conn:
@@ -101,6 +115,48 @@ def create_agent_mcp(
             {"id": new_id},
         ).mappings().first()
         return dict(ret)
+
+def clear_agent_mcp(*, agent_id: int, table_name: str) -> int:
+    """清空某 Agent 的 MCP 关系行。
+
+    返回删除条数。
+    """
+    sql = text(f"DELETE FROM `{table_name}` WHERE agent_id = :agent_id")
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        res = conn.execute(sql, {"agent_id": int(agent_id)})
+        return int(res.rowcount or 0)
+
+def bulk_insert_agent_mcp(*, agent_id: int, ids: List[int], table_name: str, permission_type: str | None = None) -> int:
+    """批量插入 Agent⇄MCP 关系。
+
+    - 当传入 permission_type 时，同时写 is_default=0。
+    - 逐条插入，忽略失败记录；返回成功插入条数。
+    """
+    if not ids:
+        return 0
+    engine = get_mysql_engine()
+    now = datetime.now(timezone.utc)
+    inserted = 0
+    with engine.begin() as conn:
+        for mid in ids:
+            try:
+                payload = {"agent_id": int(agent_id), "mcp_agent_id": int(mid), "created_at": now}
+                if permission_type is not None:
+                    payload["permission_type"] = permission_type
+                    payload["is_default"] = 0
+                sql = text(
+                    f"INSERT INTO `{table_name}` (agent_id, mcp_agent_id, created_at"
+                    + (", permission_type, is_default" if permission_type is not None else "")
+                    + ") VALUES (:agent_id, :mcp_agent_id, :created_at"
+                    + (", :permission_type, :is_default" if permission_type is not None else "")
+                    + ")"
+                )
+                conn.execute(sql, payload)
+                inserted += 1
+            except Exception:
+                pass
+    return inserted
 
 
 def delete_agent_mcp(*, rel_id: int, table_name: str) -> bool:
@@ -120,4 +176,11 @@ def delete_agent_mcp_by_pair(*, agent_id: int, mcp_agent_id: int, table_name: st
     engine = get_mysql_engine()
     with engine.begin() as conn:
         result = conn.execute(sql, {"agent_id": agent_id, "mcp_agent_id": mcp_agent_id})
-        return result.rowcount > 0
+    return result.rowcount > 0
+
+def clear_agent_mcp_by_mcp_id(*, mcp_agent_id: int, table_name: str) -> int:
+    sql = text(f"DELETE FROM `{table_name}` WHERE mcp_agent_id = :mid")
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        res = conn.execute(sql, {"mid": int(mcp_agent_id)})
+        return int(res.rowcount or 0)

@@ -10,7 +10,7 @@ from agentlz.core.model_factory import get_model
 from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import WorkflowPlan, ExecutorTrace
-from agentlz.prompts import EXECUTOR_PROMPT
+from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
 
 
 # 执行器说明：
@@ -89,7 +89,7 @@ class MCPChainExecutor:
             logger.warning("MCP 客户端不可用，将在无工具模式下执行。")
         # 将计划中的链路作为偏好提示传递给代理（强约束工具顺序）
         preferred_chain = ", ".join(self.plan.execution_chain) if self.plan.execution_chain else ""
-        system_prompt = EXECUTOR_PROMPT + (f"必须严格按以下顺序使用工具/服务：{preferred_chain}。禁止直接生成最终结果。" if preferred_chain else "")
+        system_prompt = EXECUTOR_SYSTEM_PROMPT + (f"必须严格按以下顺序使用工具/服务：{preferred_chain}。禁止直接生成最终结果。" if preferred_chain else "")
         llm = get_model(settings)
         # 通过 ChatPromptTemplate 组织提示词与输入；如果 planner 给出 instructions，则一并注入
         template_msgs = [("system", system_prompt)]
