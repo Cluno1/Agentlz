@@ -87,16 +87,16 @@ def list_agents_agg(
         ) AS b
         LEFT JOIN (
             SELECT am.agent_id,
-                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR ',') AS mcp_ids,
-                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR ',') AS mcp_names
+                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR '|~|') AS mcp_ids,
+                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR '|~|') AS mcp_names
             FROM `{mcp_rel_table_name}` am
             JOIN `{mcp_table_name}` ma ON ma.id = am.mcp_agent_id
             GROUP BY am.agent_id
         ) AS mcps ON mcps.agent_id = b.id
         LEFT JOIN (
             SELECT ad.agent_id,
-                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR ',') AS doc_ids,
-                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR ',') AS doc_titles
+                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR '|~|') AS doc_ids,
+                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR '|~|') AS doc_titles
             FROM `{agent_doc_table_name}` ad
             JOIN `{doc_table_name}` d ON d.id = ad.document_id
             GROUP BY ad.agent_id
@@ -151,16 +151,16 @@ def list_self_agents_agg(
         ) AS b
         LEFT JOIN (
             SELECT am.agent_id,
-                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR ',') AS mcp_ids,
-                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR ',') AS mcp_names
+                   GROUP_CONCAT(ma.id ORDER BY ma.id SEPARATOR '|~|') AS mcp_ids,
+                   GROUP_CONCAT(ma.name ORDER BY ma.id SEPARATOR '|~|') AS mcp_names
             FROM `{mcp_rel_table_name}` am
             JOIN `{mcp_table_name}` ma ON ma.id = am.mcp_agent_id
             GROUP BY am.agent_id
         ) AS mcps ON mcps.agent_id = b.id
         LEFT JOIN (
             SELECT ad.agent_id,
-                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR ',') AS doc_ids,
-                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR ',') AS doc_titles
+                   GROUP_CONCAT(d.id ORDER BY d.id SEPARATOR '|~|') AS doc_ids,
+                   GROUP_CONCAT(d.title ORDER BY d.id SEPARATOR '|~|') AS doc_titles
             FROM `{agent_doc_table_name}` ad
             JOIN `{doc_table_name}` d ON d.id = ad.document_id
             GROUP BY ad.agent_id

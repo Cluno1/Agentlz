@@ -272,26 +272,55 @@ def list_agents_service(
         user_id=uid, tenant_id=tenant_id, table_name=user_table)
     agent_table = _tables()["agent"]
     if type == "self":
-        rows, total = _list_self_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, user_id=uid, table_name=agent_table)
+        rows, total = repo.list_self_agents_agg(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            user_id=uid,
+            agent_table_name=_tables()["agent"],
+            mcp_rel_table_name=_tables()["agent_mcp"],
+            mcp_table_name=getattr(s, "mcp_agents_table_name", "mcp_agents"),
+            agent_doc_table_name=_tables()["agent_document"],
+            doc_table_name=_tables()["doc"],
+        )
     elif type == "tenant":
         user_tid = str((user_info or {}).get("tenant_id") or tenant_id)
-        rows, total = repo.list_agents(page=page, per_page=per_page, sort=sort, order=order, q=q, tenant_id=user_tid, table_name=agent_table)
+        s_local = get_settings()
+        rows, total = repo.list_agents_agg(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            tenant_id=user_tid,
+            agent_table_name=_tables()["agent"],
+            mcp_rel_table_name=_tables()["agent_mcp"],
+            mcp_table_name=getattr(s_local, "mcp_agents_table_name", "mcp_agents"),
+            agent_doc_table_name=_tables()["agent_document"],
+            doc_table_name=_tables()["doc"],
+        )
     else:
         raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant'")
     for r in rows:
         r.pop("api_name", None)
         r.pop("api_key", None)
-        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
-        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
-        m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
-        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
-        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
-        doc_items: List[Dict[str, Any]] = []
-        for did in d_ids:
-            d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables()["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
-            doc_items.append({"id": did, "name": str(d.get("title") or "")})
-        r["documents"] = doc_items
+        mcp_ids_str = str(r.get("mcp_ids") or "")
+        mcp_names_str = str(r.get("mcp_names") or "")
+        doc_ids_str = str(r.get("doc_ids") or "")
+        doc_titles_str = str(r.get("doc_titles") or "")
+        sep = "|~|"
+        mcp_ids = [x for x in mcp_ids_str.split(sep) if x] if mcp_ids_str else []
+        mcp_names = [x for x in mcp_names_str.split(sep) if x] if mcp_names_str else []
+        r["mcp_agents"] = [{"id": int(mcp_ids[i]), "name": mcp_names[i] if i < len(mcp_names) else ""} for i in range(len(mcp_ids))]
+        doc_ids = [x for x in doc_ids_str.split(sep) if x] if doc_ids_str else []
+        doc_titles = [x for x in doc_titles_str.split(sep) if x] if doc_titles_str else []
+        r["documents"] = [{"id": doc_ids[i], "name": doc_titles[i] if i < len(doc_titles) else ""} for i in range(len(doc_ids))]
+        r.pop("mcp_ids", None)
+        r.pop("mcp_names", None)
+        r.pop("doc_ids", None)
+        r.pop("doc_titles", None)
     return rows, total
 
 

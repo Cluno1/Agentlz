@@ -47,7 +47,7 @@ def list_agents(
         f"page={page} per_page={per_page} sort={sort} order={order} q={q} type={type} "
         f"tenant_id={tenant_id} user_id={user_id}"
     )
-    rows, total = agent_service.list_agents_service_agg(
+    rows, total = agent_service.list_agents_service(
         page=page,
         per_page=per_page,
         sort=sort,
