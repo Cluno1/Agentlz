@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine

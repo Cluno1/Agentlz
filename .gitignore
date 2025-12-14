@@ -220,3 +220,4 @@ test/planner/counter.json
 .trae/
 .cursor/
 .vscode/
+.idea/

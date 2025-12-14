@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
+from fastapi.responses import StreamingResponse
 from agentlz.core.logger import setup_logging
 from agentlz.schemas.responses import Result
-from agentlz.services import agent_service, mcp_service
+from agentlz.services import agent_service, mcp_service, rag_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
-from agentlz.schemas.agent import AgentCreate, AgentUpdate, AgentApiUpdate
+from agentlz.schemas.agent import AgentCreate, AgentUpdate, AgentApiUpdate, AgentChatInput, AgentChatHistoryInput, AgentChatSessionInput
 from typing import List
 
 logger = setup_logging()
@@ -53,6 +54,35 @@ def list_agents(
         order=order,
         q=q,
         type=type,
+        tenant_id=tenant_id,
+        claims=claims,
+    )
+    return Result.ok({"rows": rows, "total": total})
+
+
+@router.get("/agents/accessible", response_model=Result)
+def list_accessible_agents(
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    sort: str = Query("id"),
+    order: str = Query("DESC", regex="^(ASC|DESC)$"),
+    q: Optional[str] = Query(None),
+):
+    tenant_id = require_tenant_id(request)
+    user_id = claims.get("sub") if isinstance(claims, dict) else None
+    logger.info(
+        f"request {request.method} {request.url.path} "
+        f"page={page} per_page={per_page} sort={sort} order={order} q={q} type={type} "
+        f"tenant_id={tenant_id} user_id={user_id}"
+    )
+    rows, total = agent_service.list_accessible_agents_service(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        q=q,
         tenant_id=tenant_id,
         claims=claims,
     )
@@ -269,3 +299,109 @@ def reset_agent_mcp(agent_id: int, request: Request, claims: Dict[str, Any] = De
     )
     res = agent_service.reset_agent_mcp_service(agent_id=agent_id, tenant_id=tenant_id, claims=claims)
     return Result.ok(res)
+@router.post("/agent/chat", response_class=StreamingResponse)
+def chat_agent(payload: AgentChatInput, request: Request):
+    """
+    调用 Agent 进行聊天
+    
+    - `api_name`: Agent API 名称
+    - `api_key`: Agent API 密钥
+    - `type`: 聊天类型（0：创建新纪录，1：继续已有纪录,可以获取历史纪录）
+    - `record_id`: record的ID（仅在 `type=1` 时有效）
+    - `meta`: 可选的元数据字典（如用户 ID、会话 ID 等）
+
+    """
+    logger = setup_logging()
+    logger.info(f"进入:[ chat_agent ]: {payload}")
+
+    auth_header = request.headers.get("Authorization")
+    claims: Optional[Dict[str, Any]] = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        try:
+            claims = require_auth(auth_header)
+        except HTTPException as e:
+            if not (payload.api_key and payload.api_name):
+                raise e
+    agent_id = None
+    if payload.api_key and payload.api_name:
+        row = agent_service.get_agent_by_api_credentials_service(api_name=str(payload.api_name or ""), api_key=str(payload.api_key or ""))
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent不存在")
+        agent_id = int(row.get("id"))
+    else:
+        if not payload.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id不能为空")
+        tenant_id = require_tenant_id(request)
+        agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
+        agent_id = int(payload.agent_id)
+    logger.info(f"[chat_agent] 获取 agent id 成功: agent_id={agent_id}")
+    if payload.type == 1:
+        if not payload.record_id:
+            raise HTTPException(status_code=400, detail="record_id不能为空")
+        rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
+        logger.info(f"[chat_agent] 校验 record id 成功: record_id={payload.record_id}")
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id), meta=payload.meta)
+    else:
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, meta=payload.meta)
+    return StreamingResponse(generator, media_type="text/event-stream")
+
+
+
+
+def _resolve_agent_id_for_chat_history(payload: AgentChatHistoryInput, request: Request) -> int:
+    """解析 Agent ID 用于聊天历史记录查询"""
+    auth_header = request.headers.get("Authorization")
+    claims: Optional[Dict[str, Any]] = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        try:
+            claims = require_auth(auth_header)
+        except HTTPException as e:
+            if not (payload.api_key and payload.api_name):
+                raise e
+    agent_id: Optional[int] = None
+    if payload.api_key and payload.api_name:
+        row = agent_service.get_agent_by_api_credentials_service(
+            api_name=str(payload.api_name or ""),
+            api_key=str(payload.api_key or "")
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent不存在")
+        agent_id = int(row.get("id"))
+    else:
+        if not payload.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id不能为空")
+        tenant_id = require_tenant_id(request)
+        agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
+        agent_id = int(payload.agent_id)
+    return int(agent_id)
+
+
+@router.post("/agent/chat/history", response_model=Result)
+def chat_agent_history(payload: AgentChatHistoryInput, request: Request):
+    agent_id = _resolve_agent_id_for_chat_history(payload, request)
+    res = rag_service.get_list_records_by_name_and_agent_id(
+        agent_id=agent_id,
+        page=payload.page,
+        per_page=payload.per_page,
+        keyword=payload.keyword,
+    )
+    return Result.ok(res)
+
+
+@router.post("/agent/chat/session", response_model=Result)
+def chat_agent_session(payload: AgentChatSessionInput, request: Request):
+    agent_id = _resolve_agent_id_for_chat_history(payload, request)
+    if not payload.record_id:
+        raise HTTPException(status_code=400, detail="record_id不能为空")
+    res = rag_service.get_sessions_by_record_paginated(
+        agent_id=agent_id,
+        meta=payload.meta,
+        record_id=int(payload.record_id),
+        page=payload.page,
+        per_page=payload.per_page,
+    )
+    return Result.ok(res)
+    
+
+
+    

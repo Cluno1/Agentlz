@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import time
 from typing import Optional, Any, Dict
 from agentlz.config.settings import get_settings
 import pika  # type: ignore
@@ -169,26 +170,55 @@ def publish_to_rabbitmq(queue_name: str, message: Dict[str, Any], durable: bool 
     :param message: 要发布的消息字典
     :param durable: 是否持久化消息（默认True）
     """
-    try:
-        channel = get_rabbitmq_channel()
-
-        # 声明队列（如果已存在则忽略）
-        channel.queue_declare(queue=queue_name, durable=durable)
-
-        # 发布消息
-        body = json.dumps(message, ensure_ascii=False)
-        channel.basic_publish(
-            exchange="",
-            routing_key=queue_name,
-            body=body,
-            properties=pika.BasicProperties(
-                delivery_mode=2 if durable else 1)  # 2=持久化, 1=非持久化
-        )
-
-        logger.info(f"消息发布到队列 {queue_name} 成功")
-    except Exception as e:
-        logger.error(f"消息发布到队列 {queue_name} 失败: {e}")
-        raise RuntimeError(f"消息发布到RabbitMQ失败: {e}") from e
+    s = get_settings()
+    max_retries = int(getattr(s, "rabbitmq_max_retries", 3) or 3)
+    last_err: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            channel = get_rabbitmq_channel()
+            if channel is None or channel.is_closed:
+                try:
+                    if _RABBITMQ_CHANNEL and not _RABBITMQ_CHANNEL.is_closed:
+                        _RABBITMQ_CHANNEL.close()
+                except Exception:
+                    pass
+                try:
+                    if _RABBITMQ_CONNECTION and not _RABBITMQ_CONNECTION.is_closed:
+                        _RABBITMQ_CONNECTION.close()
+                except Exception:
+                    pass
+                globals()["_RABBITMQ_CHANNEL"] = None
+                globals()["_RABBITMQ_CONNECTION"] = None
+                channel = get_rabbitmq_channel()
+            channel.queue_declare(queue=queue_name, durable=durable)
+            body = json.dumps(message, ensure_ascii=False)
+            channel.basic_publish(
+                exchange="",
+                routing_key=queue_name,
+                body=body,
+                properties=pika.BasicProperties(
+                    delivery_mode=2 if durable else 1
+                ),
+            )
+            logger.info(f"消息发布到队列 {queue_name} 成功")
+            return
+        except Exception as e:
+            last_err = e
+            try:
+                if _RABBITMQ_CHANNEL and not _RABBITMQ_CHANNEL.is_closed:
+                    _RABBITMQ_CHANNEL.close()
+            except Exception:
+                pass
+            try:
+                if _RABBITMQ_CONNECTION and not _RABBITMQ_CONNECTION.is_closed:
+                    _RABBITMQ_CONNECTION.close()
+            except Exception:
+                pass
+            globals()["_RABBITMQ_CHANNEL"] = None
+            globals()["_RABBITMQ_CONNECTION"] = None
+            time.sleep(0.5 * (attempt + 1))
+    logger.error(f"消息发布到队列 {queue_name} 失败: {last_err}")
+    raise RuntimeError(f"消息发布到RabbitMQ失败: {last_err}")
 
 
 def upload_to_cos(document: bytes, filename: str, path: str = "unknown/", bucket: Optional[str] = None) -> str:

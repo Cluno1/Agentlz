@@ -106,6 +106,16 @@ class Settings(BaseSettings):
         default="agent_mcp", env="AGENT_MCP_TABLE_NAME")
     agent_document_table_name: str = Field(
         default="agent_document", env="AGENT_DOCUMENT_TABLE_NAME")
+    mcp_agents_table_name: str = Field(
+        default="mcp_agents", env="MCP_AGENTS_TABLE_NAME")
+    user_agent_permission_table_name: str = Field(
+        default="user_agent_permission", env="USER_AGENT_PERMISSION_TABLE_NAME")
+    record_table_name: str = Field(
+        default="record", env="RECORD_TABLE_NAME")
+    session_table_name: str = Field(
+        default="session", env="SESSION_TABLE_NAME")
+    record_session_table_name: str = Field(
+        default="record_session", env="RECORD_SESSION_TABLE_NAME")
 
 
 
@@ -125,6 +135,10 @@ class Settings(BaseSettings):
     event_schema_version: str = Field(default="v1", env="EVENT_SCHEMA_VERSION")
 
     chain_hard_limit: int = Field(default=20, env="CHAIN_HARD_LIMIT")
+
+    # SSE 流式输出缓冲阈值
+    sse_flush_ms: float = Field(default=0.08, env="SSE_FLUSH_MS")
+    sse_max_buf: int = Field(default=64, env="SSE_MAX_BUF")
 
 
 def get_settings() -> Settings:

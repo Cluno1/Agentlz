@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Optional, Dict, List
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 from dataclasses import asdict
 from agentlz.config.settings import get_settings
@@ -100,8 +100,7 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     seq = 1
 
     def _now():
-        """返回 UTC ISO8601 时间戳（附加 Z）用于事件壳 `ts` 字段。"""
-        return datetime.utcnow().isoformat() + "Z"
+        return datetime.now(timezone(timedelta(hours=8))).isoformat()
 
     def _sse(evt: str, payload: Any) -> str:
         """构造单帧 SSE 文本。

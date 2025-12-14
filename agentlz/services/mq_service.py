@@ -8,6 +8,8 @@ from agentlz.core.logger import setup_logging
 import pika
 
 from agentlz.services.document_service import process_document_from_cos_https
+from agentlz.services.cache_service import cache_get
+from agentlz.repositories import session_repository as sess_repo
 
 logger = setup_logging()
 class BizError(Exception):
@@ -60,14 +62,21 @@ class MQService:
 
                 # 声明队列并设置流控
                 self._channel.queue_declare(queue='doc_parse_tasks', durable=True)
+                self._channel.queue_declare(queue='chat_persist_tasks', durable=True)
                 self._channel.basic_qos(prefetch_count=1)
 
                 logger.info("开始监听文档解析任务队列...")
+                logger.info("开始监听聊天持久化任务队列...")
 
                 # 设置消费者
                 self._channel.basic_consume(
                     queue='doc_parse_tasks',
                     on_message_callback=self._process_message,
+                    auto_ack=False
+                )
+                self._channel.basic_consume(
+                    queue='chat_persist_tasks',
+                    on_message_callback=self._process_chat_persist_message,
                     auto_ack=False
                 )
 
@@ -123,8 +132,6 @@ class MQService:
             # 调用文档处理服务
             process_document_from_cos_https(save_https, document_type,doc_id,tenant_id)
             
-            
-            
             logger.info(f"文档 {doc_id} 处理完成")
             
             # 确认消息处理成功
@@ -153,6 +160,65 @@ class MQService:
                     properties=pika.BasicProperties(headers=headers)
                 )
                 ch.basic_ack(delivery_tag=method.delivery_tag)  # 把旧消息 ack 掉，避免重复
+    # 处理聊天持久化任务消息
+    def _process_chat_persist_message(self, ch, method, properties, body):
+        """处理接收到的消息 聊天持久化任务"""
+        headers = properties.headers or {}
+        retry = int(headers.get("x-retry", 0))
+        max_retries = self.settings.rabbitmq_max_retries
+
+        try:
+            message = json.loads(body.decode('utf-8'))
+            logger.info(f"收到聊天持久化任务: {message}")
+
+            redis_key = message.get('redis_key')
+            agent_id = message.get('agent_id')
+            record_id = message.get('record_id')
+            session_id = message.get('session_id')
+
+            if not all([redis_key, agent_id, record_id, session_id]):
+                raise BizError("消息格式不完整，缺少必要字段")
+
+            cached = cache_get(str(redis_key))
+            if not cached:
+                raise BizError("redis payload 不存在")
+            obj = json.loads(cached)
+            inp = obj.get("input")
+            outp = obj.get("output")
+            if inp is None or outp is None:
+                raise BizError("redis payload 缺少 input/output")
+            s = get_settings()
+            sess_table = getattr(s, "session_table_name", "session")
+            rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=sess_table)
+            next_count = 1
+            if rows:
+                try:
+                    last = rows[-1]
+                    next_count = int(last.get("count") or 0) + 1
+                except Exception:
+                    next_count = 1
+            sess_repo.create_session(record_id=int(record_id), count=int(next_count), meta_input=inp, meta_output=outp, zip=str(session_id or ""), table_name=sess_table)
+
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except BizError as biz:
+            logger.error(f"业务异常，丢弃消息: {biz}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            save_to_dead_letter(body, reason=str(biz))
+        except Exception as sys_exc:
+            if retry >= max_retries:
+                logger.error(f"已达最大重试次数[{max_retries}]，丢弃消息")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                save_to_dead_letter(body, reason=str(sys_exc))
+            else:
+                headers["x-retry"] = retry + 1
+                ch.basic_publish(
+                    exchange='',
+                    routing_key=method.routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(headers=headers)
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
 
 # 全局MQ服务实例
 _mq_service = None

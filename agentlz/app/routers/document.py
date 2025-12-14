@@ -149,26 +149,3 @@ def create_document(
         claims=claims
     )
     return Result.ok(data=row)
-
-# 搜索文档内容 测试接口,后续做agent集成
-@router.get("/rag/search", response_model=Result)
-def search_rag(
-    request: Request,
-    claims: Dict[str, Any] = Depends(require_auth),
-    query: str = Query(..., description="查询文本"),
-    doc_id: Optional[str] = Query(None, description="限定文档ID"), 
-    limit: int = Query(10, ge=1, le=50, description="返回数量"),
-    metric: str = Query("euclidean", regex="^(euclidean|cosine)$", description="距离度量"),
-    include_vector: bool = Query(False, description="是否返回向量"),
-):
-    tenant_id = require_tenant_id(request)
-    rows = document_service.rag_search_service(
-        query=query,
-        tenant_id=tenant_id,
-        claims=claims,
-        doc_id=doc_id,
-        limit=limit,
-        distance_metric=metric,
-        include_vector=include_vector,
-    )
-    return Result.ok(data={"rows": rows, "total": len(rows)})

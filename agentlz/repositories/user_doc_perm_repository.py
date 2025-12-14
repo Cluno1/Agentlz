@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
@@ -127,7 +127,7 @@ def create_user_doc_perm(
     # 创建用户文档权限关系并返回记录
     """插入权限记录并返回插入后的记录"""
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone(timedelta(hours=8)))
     sql = text(
         f"""
         INSERT INTO `{table_name}`

@@ -159,6 +159,24 @@ CREATE TABLE `agent` (
   INDEX `fk_agent_created_by`(`created_by_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
+DROP TABLE IF EXISTS `record`;
+-- 记录表：保存某个 Agent 的记录元数据
+-- 说明：
+--  - 一条记录属于一个 Agent（`agent_id` 外键）
+--  - `name` 为记录展示名称；`meta` 存储扩展元数据（如 JSON）
+--  - 结合 `record_session` 可关联到多个会话
+CREATE TABLE `record` (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '记录名称',
+  `meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '扩展元数据（JSON等）',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_record_agent`(`agent_id`) USING BTREE, -- 通过Agent过滤加速
+  INDEX `idx_record_name`(`name`) USING BTREE, -- 名称查询加速
+  CONSTRAINT `fk_record_agent` FOREIGN KEY (`agent_id`) REFERENCES `agent` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
 DROP TABLE IF EXISTS `agent_mcp`;
 CREATE TABLE `agent_mcp` (
   `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
@@ -186,7 +204,7 @@ CREATE TABLE `agent_document` (
 DROP TABLE IF EXISTS `session`;
 CREATE TABLE `session` (
   `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+  `record_id` bigint(20) UNSIGNED NOT NULL COMMENT '记录ID',
   `count` int(11) NOT NULL DEFAULT 0 COMMENT '对话轮次',
   `description` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '本会话描述(包含全部轮次)',
   `meta` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '（预留字段',
@@ -195,6 +213,8 @@ CREATE TABLE `session` (
   `zip` longtext NULL COMMENT '压缩后的会话数据',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_session_agent`(`agent_id`) USING BTREE
+  INDEX `idx_session_record`(`record_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+
 SET FOREIGN_KEY_CHECKS = 1;
