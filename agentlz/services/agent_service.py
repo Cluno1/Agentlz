@@ -564,6 +564,21 @@ def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: s
 
 
 def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    """
+    LLM 简单回答流式生成器（Answer 版）
+    参数：
+    - agent_id：智能体 ID
+    - record_id：会话记录 ID
+    - out：RAG 预处理结果（包含 message/doc/history）
+    - meta：可选元信息
+    返回：
+    - 以 SSE（Server-Sent Events）格式逐帧返回字符串；末帧为 `[DONE]`
+    说明：
+    - 组装 `RAG_ANSWER_SYSTEM_PROMPT` 与用户消息/历史/候选文档
+    - 使用流式模型按缓冲大小与时间阈值 flush，保持前端平滑渲染
+    - 模型未配置时回退为直出文本（优先 message，其次 doc）
+    - 完成后持久化输入/输出到缓存与消息队列，便于审计与检索
+    """
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
     logger.debug(f"进入 [agent_llm_answer_stream] agent_id={agent_id} record_id={record_id}")
     settings = get_settings()
@@ -633,6 +648,163 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
         logger.debug(f"完成 [agent_llm_answer_stream] record_id={record_id}")
     return _gen()
 
+def agent_llm_exe_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    """
+    LLM 执行流式生成器（MCP 版，SSE 事件）
+    - 事件：chain.step/planner.plan/call.start/call.end/executor.summary/final
+    - 帧格式：event/id/data（data 为 EventEnvelope JSON）
+    - 文本类事件按缓冲阈值与时间阈值分块发送
+    """
+    from dataclasses import asdict
+    from datetime import datetime, timezone, timedelta
+    import threading
+    import asyncio
+    from uuid import uuid4
+    from agentlz.schemas.events import EventEnvelope
+    from agentlz.agents.planner.planner_agent import plan_workflow_chain
+    from agentlz.agents.executor.executor_agnet import MCPChainExecutor
+    from agentlz.schemas.workflow import WorkflowPlan, ExecutorTrace
+    from langchain.agents import create_agent
+    from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
+    logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(f"进入 [agent_llm_exe_stream] agent_id={agent_id} record_id={record_id}")
+    settings = get_settings()
+    FLUSH_MS = float(getattr(settings, "sse_flush_ms", 0.08) or 0.08)
+    MAX_BUF = int(getattr(settings, "sse_max_buf", 64) or 64)
+    trace_id = uuid4().hex
+    seq = 1
+    def _now() -> str:
+        return datetime.now(timezone(timedelta(hours=8))).isoformat()
+    def _to_payload(x: Any) -> Any:
+        try:
+            if hasattr(x, "model_dump"):
+                return x.model_dump()
+            if hasattr(x, "__dataclass_fields__"):
+                return asdict(x)
+            if isinstance(x, (dict, list, str, int, float)) or x is None:
+                return x
+            return str(x)
+        except Exception:
+            return str(x)
+    def _sse(evt: str, payload: Any) -> str:
+        nonlocal seq
+        env = EventEnvelope(evt=evt, seq=seq, ts=_now(), trace_id=trace_id, payload=_to_payload(payload))
+        seq += 1
+        txt = json.dumps(env.model_dump(), ensure_ascii=False)
+        return f"event: {evt}\nid: {env.seq}\ndata: {txt}\n\n"
+    q: "queue.Queue[str]" = __import__("queue").Queue()
+    DONE = "__SSE_DONE__"
+    def _emit(evt: str, payload: Any) -> None:
+        try:
+            q.put_nowait(_sse(evt, payload))
+        except Exception:
+            pass
+    def _emit_text(evt: str, text: str) -> None:
+        buf = ""
+        last_emit = time.time()
+        for ln in str(text).split("\n"):
+            buf += (ln + "\n")
+            now = time.time()
+            if (len(buf) >= MAX_BUF) or ((now - last_emit) >= FLUSH_MS) or ("\n" in ln):
+                payload = buf.rstrip("\n")
+                if payload.strip() != "":
+                    _emit(evt, payload)
+                buf = ""
+                last_emit = now
+        if buf.strip() != "":
+            _emit(evt, buf)
+    def _runner():
+        try:
+            user_input = str(out.get("message") or "") or str(out.get("doc") or "")
+            if not user_input:
+                _emit("final", "未提供可执行输入")
+                q.put(DONE)
+                return
+            _emit("chain.step", "planner")
+            plan = plan_workflow_chain(user_input)
+            # 仅使用远程 MCP（http/sse），忽略 stdio
+            try:
+                remote_items = [item for item in getattr(plan, "mcp_config", []) or [] if str(getattr(item, "transport", "") or "").lower() in ("http", "sse")]
+                if not remote_items:
+                    _emit("executor.error", {"stage": "plan", "message": "计划不包含远程 MCP(http/sse) 工具"})
+                    _emit_text("final", "执行失败：计划不包含远程 MCP(http/sse) 工具")
+                    q.put(DONE)
+                    return
+                plan.mcp_config = remote_items
+            except Exception as e:
+                _emit("executor.error", {"stage": "plan", "message": f"解析计划失败：{e}"})
+                _emit_text("final", f"执行失败：解析计划失败 {e}")
+                q.put(DONE)
+                return
+            _emit("planner.plan", plan)
+            _emit("chain.step", "executor")
+            try:
+                executor = MCPChainExecutor(plan if isinstance(plan, WorkflowPlan) else WorkflowPlan(execution_chain=[], mcp_config=[], instructions=""))
+            except Exception as e:
+                _emit("executor.error", {"stage": "init", "message": str(e)})
+                _emit_text("final", f"执行器初始化失败：{e}")
+                q.put(DONE)
+                return
+            try:
+                executor.assemble_mcp()
+                tools = []
+                if getattr(executor, "client", None) is not None:
+                    try:
+                        tools = asyncio.run(executor.client.get_tools())
+                    except Exception as e:
+                        tools = []
+                        _emit("executor.error", {"stage": "tools", "message": str(e)})
+                # 若未加载到工具，直接给出错误并结束，避免误把计划文本当执行结果
+                if not tools:
+                    _emit("executor.error", {"stage": "tools", "message": "未加载到任何 MCP 工具"})
+                    _emit_text("final", "执行失败：未加载到 MCP 工具")
+                    q.put(DONE)
+                    return
+                # 使用执行器统一执行链（内部会收集工具调用日志）
+                final_text = asyncio.run(executor.execute_chain(user_input))
+                logs = getattr(executor, "last_calls", []) or []
+                # 逐条推送工具级事件
+                for c in logs:
+                    _emit("call.start", {"name": str(c.get("name","")), "input": str(c.get("input",""))})
+                    _emit("call.end", {"name": str(c.get("name","")), "output": str(c.get("output","")), "status": str(c.get("status","success"))})
+                if logs:
+                    rows = []
+                    chain = getattr(plan, "execution_chain", []) or []
+                    enriched = []
+                    for i, c in enumerate(logs, 1):
+                        server_name = chain[i - 1] if 0 <= (i - 1) < len(chain) else ""
+                        cc = {**c, "server": server_name}
+                        enriched.append(cc)
+                        rows.append(f"{i:02d}. {c.get('name','')} -> {c.get('status','')}\n服务器: {server_name}\n输入: {c.get('input','')}\n输出: {c.get('output','')}")
+                    chain_text = ", ".join(chain) if chain else ""
+                    prefix = ("实际调用链:\n" + chain_text + "\n\n") if chain_text else ""
+                    summary = (prefix + "工具调用摘要:\n" + "\n\n".join(rows)).strip()
+                    _emit_text("executor.summary", summary)
+                else:
+                    _emit_text("executor.summary", "执行器完成，无工具调用日志。")
+                _emit_text("final", str(final_text))
+                try:
+                    persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=str(final_text), meta=meta)
+                except Exception:
+                    pass
+            except Exception as e:
+                _emit("executor.error", {"stage": "run", "message": str(e)})
+                _emit_text("final", f"执行器运行失败：{e}")
+        finally:
+            try:
+                q.put(DONE)
+            except Exception:
+                pass
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    while True:
+        try:
+            frame = q.get()
+        except Exception:
+            break
+        if frame == DONE:
+            break
+        yield frame
 
 def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")

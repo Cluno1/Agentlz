@@ -111,8 +111,6 @@ def get_agent(agent_id: int, request: Request, claims: Dict[str, Any] = Depends(
         raise HTTPException(status_code=404, detail="Agent不存在")
     return Result.ok(row)
 
- 
-
 
 @router.post("/agents", response_model=Result)
 def create_agent(
