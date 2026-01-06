@@ -7,6 +7,8 @@ class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
     disabled: Optional[bool] = None
+    system_prompt: Optional[str] = None
+    meta: Optional[dict] = None
     mcp_agent_ids: Optional[List[int]] = None
     document_ids: Optional[List[str]] = None
 
@@ -15,6 +17,8 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     disabled: Optional[bool] = None
+    system_prompt: Optional[str] = None
+    meta: Optional[dict] = None
     mcp_agent_ids: Optional[List[int]] = None
     document_ids: Optional[List[str]] = None
 

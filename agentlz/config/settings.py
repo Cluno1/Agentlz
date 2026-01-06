@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     sse_flush_ms: float = Field(default=0.08, env="SSE_FLUSH_MS")
     sse_max_buf: int = Field(default=64, env="SSE_MAX_BUF")
 
+    # 服务配置 - 监听地址和端口
+    server_host: str = Field(default="127.0.0.1", env="SERVER_HOST")
+    server_port: int = Field(default=8000, env="SERVER_PORT")
+
 
 def get_settings() -> Settings:
     return Settings()

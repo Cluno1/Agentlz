@@ -16,7 +16,7 @@
 
  设置.env 环境变量
 
- 启动:  uvicorn agentlz.app.http_langserve:app --port 8000
+ 启动:  python start_server.py
 ```
 
 ```bash

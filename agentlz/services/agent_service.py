@@ -38,6 +38,18 @@ def _current_user_id(claims: Optional[Dict[str, Any]]) -> int:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
 
 
+def _process_agent_meta(agent: Dict[str, Any]) -> Dict[str, Any]:
+    """处理agent的meta字段反序列化"""
+    if "meta" in agent and agent["meta"] is not None:
+        try:
+            if isinstance(agent["meta"], str):
+                agent["meta"] = json.loads(agent["meta"])
+        except (json.JSONDecodeError, TypeError):
+            # 如果解析失败，保持原样
+            pass
+    return agent
+
+
 def _tables() -> Dict[str, str]:
     s = get_settings()
     return {
@@ -93,6 +105,8 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             "description": payload.get("description"),
             "api_name": None,
             "api_key": None,
+            "system_prompt": payload.get("system_prompt"),
+            "meta": payload.get("meta"),
             "created_by_id": uid,
             "disabled": bool(payload.get("disabled", False)),
         },
@@ -122,7 +136,7 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             seen_d.add(did_str)
             doc_rel_repo.create_agent_document(payload={"agent_id": int(
                 row["id"]), "document_id": did_str}, table_name=_tables()["agent_document"])
-    return row
+    return _process_agent_meta(row)
 
 
 def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -152,6 +166,10 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         update_payload["name"] = payload.get("name")
     if "description" in payload:
         update_payload["description"] = payload.get("description")
+    if "system_prompt" in payload:
+        update_payload["system_prompt"] = payload.get("system_prompt")
+    if "meta" in payload:
+        update_payload["meta"] = payload.get("meta")
     if "disabled" in payload and payload["disabled"] is not None:
         update_payload["disabled"] = bool(payload.get("disabled"))
     update_payload["updated_by_id"] = uid
@@ -190,7 +208,12 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         for did in to_del_d:
             doc_rel_repo.delete_agent_document_by_pair(
                 agent_id=agent_id, document_id=did, table_name=_tables()["agent_document"])
-    return updated
+    
+    # 返回更新后的agent信息，处理meta字段反序列化
+    if updated:
+        updated_agent = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
+        return _process_agent_meta(dict(updated_agent)) if updated_agent else None
+    return None
 
 
 def update_agent_api_keys_service(*, agent_id: int, api_name: Optional[str], api_key: Optional[str], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -306,6 +329,8 @@ def list_agents_service(
     for r in rows:
         r.pop("api_name", None)
         r.pop("api_key", None)
+        # 处理meta字段反序列化
+        _process_agent_meta(r)
         mcp_ids_str = str(r.get("mcp_ids") or "")
         mcp_names_str = str(r.get("mcp_names") or "")
         doc_ids_str = str(r.get("doc_ids") or "")
@@ -373,6 +398,8 @@ def list_accessible_agents_service(
         # 隐藏敏感字段
         r.pop("api_name", None)
         r.pop("api_key", None)
+        # 处理meta字段反序列化
+        _process_agent_meta(r)
         rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()[
                                             "agent_mcp"]) if r.get("id") is not None else []
         m_ids = [int(x.get("mcp_agent_id"))
@@ -414,7 +441,7 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
         return None
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
-    return row
+    return _process_agent_meta(dict(row))
 
 
 def set_agent_mcp_allow_service(*, agent_id: int, mcp_agent_ids: List[int], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

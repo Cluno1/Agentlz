@@ -6,7 +6,7 @@
 
 ## 当前目标
 
-1. **Agent 即服务 (Agent as a Service)**: 企业用户可以在本平台开发 `check`, `plan`, `tools` 类型的 Agent。这些 Agent 都通过 MCP (Multi-Agent Communication Protocol) 协议开放接口，可以被其他 Agent 远程调用，实现类似插件的模式。
+1. **Agent 即服务 (Agent as a Service)**: 企业用户可以在本平台开发 `check`, `plan`, `tools` 类型的 Agent。这些 Agent 都通过 sse 协议开放接口，可以被其他程序或 Agent 远程调用，实现类似插件的模式。
 
 2. **智能调度 Agent (Intelligent Schedule Agent)**: 开发一个总调度 Agent (`schedule_agent`)，它作为整个系统的“智能指挥官”。这个 Agent 开放 FastAPI 接口，其核心逻辑由一个强大的 LLM 和一个精心设计的“主提示词 (Master Prompt)”驱动，而非固定的代码流程。
 
