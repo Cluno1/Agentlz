@@ -97,3 +97,49 @@
 - 构建 AI 智能体的 RAG 切片策略综述与实践经验，涵盖改进固定长度、语义切片、LLM 语义切片、层次切片、滑动窗口等方法
 - 更多业界实践：结构感知、AST 切片、混合检索与重排、离线指标与消融评估、动态自适应策略
 - 示例链接：阿里云开发者社区《优化 RAG 检索精度：五种高级切片策略》 https://developer.aliyun.com/article/1688285
+
+
+# 已实现策略
+
+- 改进固定长度（边界感知）： agentlz/services/chunk_embeddings_service.py:339
+- 语义切片（相邻句嵌入相似度）： agentlz/services/chunk_embeddings_service.py:416
+- LLM 语义切片（占位实现）： agentlz/services/chunk_embeddings_service.py:490
+- 层次切片（章节→段落→句子）： agentlz/services/chunk_embeddings_service.py:535
+- 滑动窗口切片（高重叠）： agentlz/services/chunk_embeddings_service.py:570
+- 结构感知切片（标题/代码/列表/表格）： agentlz/services/chunk_embeddings_service.py:602
+- 动态自适应切片（密度/困惑度启发式）： agentlz/services/chunk_embeddings_service.py:655
+- 跨块关系与联结（链接/引用就近合并，占位）： agentlz/services/chunk_embeddings_service.py:694
+函数说明
+
+- chunk_fixed_length_boundary(content: str) -> List[str]
+  - 目标长度约600，接近阈值优先在“句号/问号/换行/标题”处切分，带约80字符重叠，避免句中断裂。
+- chunk_semantic_similarity(content: str) -> List[str]
+  - 句子级嵌入，余弦相似度骤降或块超过约800时切分，保留约100字符重叠。
+  - 复用现有向量器，无外部依赖；相似度阈值默认约0.35。
+- chunk_llm_semantic(content: str) -> List[str]
+  - 预留 LLM 分段占位函数，当前退化为“标题/空行粗分 + 固定长度细分”，便于后续接入真实模型与提示词。
+- chunk_hierarchical(content: str) -> List[str]
+  - 先按 #/# #/# # # 识别章节边界，块内再用边界感知细分；按层次顺序扁平输出。
+- chunk_sliding_window(content: str) -> List[str]
+  - 窗口约600、步长约380（重叠约220），尽量在换行处结束以提升可读性。
+- chunk_structure_aware(content: str) -> List[str]
+  - 保持 fenced code、列表、表格整体，普通文本超过约800再边界感知细分；适配混排 Markdown。
+- chunk_dynamic_adaptive(content: str) -> List[str]
+  - 估计标点密度作为信息密度代理：密集段缩短（固定长度策略），稀疏段拉长（递归切分器，chunk_size≈700）。
+- chunk_with_relations(content: str) -> List[str]
+  - 检测 Markdown 链接与“参见/引用/see also/参考”等锚点，触发就近合并并使用边界感知细分；返回去重后的块。
+使用建议
+
+- 默认安全策略用 chunk_fixed_length_boundary ；对长论述或需要更高检索精度用 chunk_semantic_similarity 或后续接入 chunk_llm_semantic 的真实模型。
+- 书籍/手册等长文档建议 chunk_hierarchical 配合 chunk_structure_aware ，既保层次又保结构。
+- 代码/公式/规范条款可优先 chunk_sliding_window ，提高跨句线索覆盖。
+- 有跨块引用/链接的知识性文档，可在上面策略后接 chunk_with_relations 做补强。
+占位与扩展点
+
+- chunk_llm_semantic 中的 _llm_segment_markdown 保留模型调用占位，后续可接入你的 rerank/标签化输出，并控制每块标签与摘要。
+- chunk_semantic_similarity 的阈值与长度参数可据你的嵌入维度与目标检索 Top-K 进行调优。
+- chunk_with_relations 目前仅做就近合并与重叠，若需要图结构与跨块引用关系，请在此函数基础上扩展返回结构或另建服务层。
+质量检查
+
+- 项目未检索到明确的 lint/typecheck 命令。如果你有固定质量命令（如 ruff / flake8 / mypy 或 make lint ），请告知我，我会在后续回合加入并执行，必要时写入项目规则以便复用。
+如果要把这些策略串成可选“切片管线”，我也可以在服务层添加一个选择器函数，根据文档类型与目标模型上下文窗口自动选择策略组合。
