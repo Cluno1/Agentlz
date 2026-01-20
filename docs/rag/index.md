@@ -1,2 +1,5 @@
 
-写一个函数,把用户的message输入向量化agentlz/repositories/chunk_embeddings_repository.py,通过 doc-id去 这里用search_similar_chunks进行相似度查询,但是我需要就是也许输入的doc_ids属于不同tenant_id,这里不要做租户隔离
+# RAG 文档索引
+
+- 切片策略与优化：[chunk.md](./chunk.md)
+- 知识图谱实现与优化：[graph.md](./graph.md)
