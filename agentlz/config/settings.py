@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # model
     model_name: str = Field(default=None, env="MODEL_NAME")
     model_temperature: float = Field(default=0.0, env="MODEL_TEMPERATURE")
+    # image analyze model
+    image_analyze_model_name: str | None = Field(default=None, env="IMAGE_ANALYZE_MODEL_NAME")
     system_prompt: str = Field(
         default="You are a helpful assistant.", env="SYSTEM_PROMPT")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

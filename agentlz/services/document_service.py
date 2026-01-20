@@ -943,6 +943,7 @@ def process_document_from_cos_https(save_https: str, document_type: str, doc_id:
             tenant_id=tenant_id,
             table_name=table_name,
         )
+        # 切割为Markdown块
         chunks = split_markdown_into_chunks(text_content)
         index = 0
         for chunk in chunks:

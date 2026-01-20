@@ -334,3 +334,419 @@ def basic_chinese_text_split(content: str, max_size: int = 500, overlap: int = 5
     
     # 过滤空块
     return [chunk for chunk in chunks if chunk.strip()]
+
+
+def chunk_fixed_length_boundary(content: str) -> List[str]:
+    """改进的固定长度切片（边界感知）
+
+    目标:
+        - 以目标长度为上限，在接近长度阈值处优先选择自然语言边界（句号/问号/换行/标题）作为切点，避免句中断裂。
+
+    输入:
+        - content: Markdown格式文本
+
+    输出:
+        - List[str]: 切片列表（带少量重叠）
+
+    说明:
+        - 仅依赖正则与中文标点；适合作为默认安全策略。
+    """
+    import re
+
+    TARGET = 600
+    OVERLAP = 80
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    # 先按段落粗分（双换行优先）
+    paragraphs = re.split(r"\n\n+", content)
+    chunks: List[str] = []
+    buf = ""
+
+    def flush_buf():
+        nonlocal buf
+        if buf.strip():
+            chunks.append(buf.strip())
+            # 重叠片段（避免跨块信息丢失）
+            ov = buf[-OVERLAP:] if len(buf) > OVERLAP else buf
+            buf = ov
+
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        # 二次按句子边界分割（保留分隔符）
+        parts = re.split(r"([。！？；;!?]\s*|\n+|#{1,6}\s+)", para)
+        # 将句子和分隔符合并
+        sentences: List[str] = []
+        for i in range(0, len(parts), 2):
+            s = parts[i] or ""
+            if i + 1 < len(parts) and parts[i + 1]:
+                s += parts[i + 1]
+            if s:
+                sentences.append(s)
+
+        for s in sentences:
+            if len(buf) + len(s) <= TARGET:
+                buf += s
+            else:
+                # 接近阈值: 优先在当前句结束处切分
+                flush_buf()
+                # 如果单句太长，按字符切片
+                if len(s) > TARGET:
+                    start = 0
+                    step = TARGET - OVERLAP
+                    while start < len(s):
+                        end = min(start + TARGET, len(s))
+                        piece = s[start:end]
+                        if start > 0:
+                            piece = s[max(0, start - OVERLAP):end]
+                        chunks.append(piece.strip())
+                        start += step
+                    buf = chunks[-1][-OVERLAP:] if chunks else ""
+                else:
+                    buf = buf + s if not buf else s  # 使用当前句作为新的起始
+
+    if buf.strip():
+        chunks.append(buf.strip())
+
+    return [c for c in chunks if c.strip()]
+
+
+def chunk_semantic_similarity(content: str) -> List[str]:
+    """语义切片（Embedding 相似度驱动）
+
+    目标:
+        - 依据相邻句段的嵌入相似度或主题转折信号决定边界，保证语义完整。
+
+    输入:
+        - content: Markdown格式文本
+
+    输出:
+        - List[str]: 语义连续的文本块列表
+
+    策略:
+        - 按句子分割并计算相邻句子的余弦相似度；
+        - 当相似度骤降或块长度超阈值时切分；
+        - 适度重叠以保留跨句线索。
+    """
+    import re
+    import math
+
+    MAX_SIZE = 800
+    MIN_SIZE = 200
+    OVERLAP = 100
+    DROP_THRESHOLD = 0.35  # 相似度低于此阈值触发新块
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    parts = re.split(r"([。！？；;!?]\s*|\n+|#{1,6}\s+)", content)
+    sentences: List[str] = []
+    for i in range(0, len(parts), 2):
+        s = parts[i] or ""
+        if i + 1 < len(parts) and parts[i + 1]:
+            s += parts[i + 1]
+        if s.strip():
+            sentences.append(s.strip())
+
+    def cosine(u: Sequence[float], v: Sequence[float]) -> float:
+        if not u or not v:
+            return 0.0
+        dot = sum((x * y) for x, y in zip(u, v))
+        nu = math.sqrt(sum((x * x) for x in u))
+        nv = math.sqrt(sum((y * y) for y in v))
+        if nu == 0 or nv == 0:
+            return 0.0
+        return dot / (nu * nv)
+
+    # 计算句向量
+    vecs: List[Sequence[float]] = [embed_message_service(message=s) for s in sentences]
+
+    chunks: List[str] = []
+    buf = ""
+    last_vec: Optional[Sequence[float]] = None
+    for idx, s in enumerate(sentences):
+        v = vecs[idx]
+        sim = cosine(last_vec or [], v)
+
+        buf_len = len(buf)
+        if buf_len >= MIN_SIZE and (buf_len + len(s) > MAX_SIZE or sim < DROP_THRESHOLD):
+            # 到达长度或相似度骤降，触发切分
+            if buf.strip():
+                chunks.append(buf.strip())
+                ov = buf[-OVERLAP:] if len(buf) > OVERLAP else buf
+                buf = ov + s
+        else:
+            buf += s
+        last_vec = v
+
+    if buf.strip():
+        chunks.append(buf.strip())
+
+    return [c for c in chunks if c.strip()]
+
+
+def chunk_llm_semantic(content: str) -> List[str]:
+    """LLM 语义切片（模型辅助分割，占位实现）
+
+    目标:
+        - 按“主题/任务/意图”对文本进行智能分段，产出语义标签化的块。
+
+    说明:
+        - 本函数保留 LLM 调用占位，默认退化为结构感知 + 固定长度的组合策略；
+        - 如需使用真实 LLM，请在占位函数 `_llm_segment_markdown` 中补充调用与解析逻辑。
+    """
+    import re
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    def _llm_segment_markdown(md: str) -> List[str]:
+        """占位: 调用 LLM 生成语义段落（请自行补充实际调用）。
+
+        当前行为:
+            - 优先按标题与空行分段；
+            - 对超长段再用 `chunk_fixed_length_boundary` 细分。
+        """
+        # 标题/空行粗分
+        blocks = re.split(r"(\n{2,}|^#{1,6}\s+.*$)", md, flags=re.MULTILINE)
+        merged: List[str] = []
+        cur = ""
+        for i in range(0, len(blocks), 2):
+            seg = blocks[i] or ""
+            if i + 1 < len(blocks) and blocks[i + 1]:
+                seg = (blocks[i + 1] or "") + ("\n" + seg if seg else "")
+            if seg.strip():
+                merged.append(seg.strip())
+        # 返回粗分结果（后续细分）
+        return merged
+
+    coarse = _llm_segment_markdown(content)
+    final: List[str] = []
+    for b in coarse:
+        if len(b) <= 800:
+            final.append(b)
+        else:
+            final.extend(chunk_fixed_length_boundary(b))
+    return [c for c in final if c.strip()]
+
+
+def chunk_hierarchical(content: str) -> List[str]:
+    """层次切片（章节→段落→句子的小粒度组织）
+
+    目标:
+        - 先生成较大粒度块（章节/小节），再在块内生成细粒度子块；最终按层次顺序扁平化输出。
+
+    输入:
+        - content: Markdown格式文本
+    输出:
+        - List[str]: 层次化但扁平输出的块列表
+    """
+    import re
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    # 识别标题层级，优先 H1/H2/H3
+    pattern = re.compile(r"^#{1,3}\s+.*$", flags=re.MULTILINE)
+    indices = [m.start() for m in pattern.finditer(content)]
+    indices = [0] + indices + [len(content)]
+
+    coarse_blocks: List[str] = []
+    for i in range(len(indices) - 1):
+        block = content[indices[i]:indices[i + 1]].strip()
+        if block:
+            coarse_blocks.append(block)
+
+    final: List[str] = []
+    for b in coarse_blocks:
+        # 块内再做边界感知细分
+        final.extend(chunk_fixed_length_boundary(b))
+
+    return [c for c in final if c.strip()]
+
+
+def chunk_sliding_window(content: str) -> List[str]:
+    """滑动窗口切片（高重叠上下文）
+
+    目标:
+        - 使用固定长度窗口与重叠，保证跨块信息连续，适合代码/公式/规范类文本。
+
+    输入/输出:
+        - 输入 Markdown 文本，仅返回字符串列表。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    WINDOW = 600
+    STEP = 380  # 重叠约 220
+
+    chunks: List[str] = []
+    start = 0
+    n = len(content)
+    while start < n:
+        end = min(start + WINDOW, n)
+        piece = content[start:end]
+        # 尽量在换行处结束，提升可读性
+        if end < n:
+            back = piece.rfind("\n")
+            if back > 0 and (end - start - back) < 80:
+                end = start + back
+                piece = content[start:end]
+        chunks.append(piece.strip())
+        start = min(start + STEP, n)
+    return [c for c in chunks if c.strip()]
+
+
+def chunk_structure_aware(content: str) -> List[str]:
+    """结构感知切片（Markdown/代码块/列表/表格）
+
+    目标:
+        - 保持Markdown结构完整性：标题段、代码块、列表、表格等尽量不被拆散；
+        - 适配混排文档，提高后续检索的结构一致性。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    lines = content.splitlines()
+    chunks: List[str] = []
+    buf: List[str] = []
+    in_code = False
+    for line in lines:
+        # 代码块（fenced code）优先完整保留
+        if line.strip().startswith("```"):
+            if in_code:
+                buf.append(line)
+                chunks.append("\n".join(buf).strip())
+                buf = []
+                in_code = False
+            else:
+                if buf:
+                    # 代码块前的缓冲作为一个块输出
+                    chunks.extend(chunk_fixed_length_boundary("\n".join(buf)))
+                    buf = []
+                buf.append(line)
+                in_code = True
+            continue
+
+        if in_code:
+            buf.append(line)
+            continue
+
+        # 表格或列表区域尽量整体保留
+        if line.strip().startswith("|") or line.strip().startswith("-") or line.strip().startswith("*"):
+            buf.append(line)
+            continue
+
+        # 普通文本行
+        buf.append(line)
+        # 到达较长后切分输出
+        if sum(len(l) for l in buf) > 800:
+            chunks.extend(chunk_fixed_length_boundary("\n".join(buf)))
+            buf = []
+
+    if buf:
+        chunks.extend(chunk_fixed_length_boundary("\n".join(buf)))
+
+    return [c for c in chunks if c.strip()]
+
+
+def chunk_dynamic_adaptive(content: str) -> List[str]:
+    """动态自适应切片（基于密度/困惑度的启发式占位）
+
+    目标:
+        - 信息密集段落适当缩短块，稀疏段落适当拉长，控制“信息每块单位”均衡；
+        - 依据标点密度与行长度的简单启发式进行自适应。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    import re
+
+    lines = [ln for ln in content.splitlines() if ln.strip()]
+    groups: List[str] = []
+    cur: List[str] = []
+    for ln in lines:
+        cur.append(ln)
+        if len(cur) >= 8:
+            groups.append("\n".join(cur))
+            cur = []
+    if cur:
+        groups.append("\n".join(cur))
+
+    out: List[str] = []
+    for g in groups:
+        # 标点密度估计（作为信息密度的代理）
+        punct = len(re.findall(r"[，。；；、!?]", g))
+        density = punct / max(1, len(g))
+        # 动态目标长度
+        if density > 0.02:
+            # 信息密集：缩短
+            out.extend(chunk_fixed_length_boundary(g))
+        else:
+            # 信息稀疏：拉长（轻度放宽）
+            out.extend(split_markdown_into_chunks(g, chunk_size=700, chunk_overlap=80))
+
+    return [c for c in out if c.strip()]
+
+
+def chunk_with_relations(content: str) -> List[str]:
+    """跨块关系与知识联结（占位实现）
+
+    目标:
+        - 在切片时尽量将存在引用/链接/同主题线索的句段合并，减少跨块分裂；
+        - 通过检测 Markdown 链接、引用词、标题关联等，进行就近合并与增量重叠。
+
+    说明:
+        - 仅返回字符串列表；若需图结构或元数据，请在此函数基础上扩展。
+    """
+    import re
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    # 先按句子粗分
+    parts = re.split(r"([。！？；;!?]\s*|\n+|#{1,6}\s+)", content)
+    sentences: List[str] = []
+    for i in range(0, len(parts), 2):
+        s = parts[i] or ""
+        if i + 1 < len(parts) and parts[i + 1]:
+            s += parts[i + 1]
+        if s.strip():
+            sentences.append(s.strip())
+
+    # 标记“关系加强”的句子（含链接/引用/参见/see also）
+    def is_anchor(text: str) -> bool:
+        return bool(re.search(r"\[[^\]]+\]\([^\)]+\)|参见|引用|see also|参考", text, flags=re.IGNORECASE))
+
+    chunks: List[str] = []
+    buf: List[str] = []
+    for i, s in enumerate(sentences):
+        buf.append(s)
+        long_enough = sum(len(x) for x in buf) > 700
+        anchor_here = is_anchor(s)
+        next_anchor = i + 1 < len(sentences) and is_anchor(sentences[i + 1])
+
+        if long_enough or anchor_here or next_anchor:
+            # 带关系的句段向前/向后各并入一条，增强上下文联结
+            prev = sentences[i - 1] if i - 1 >= 0 else ""
+            nxt = sentences[i + 1] if i + 1 < len(sentences) else ""
+            block = (prev + "" if prev else "") + "".join(buf) + (nxt if nxt else "")
+            for piece in chunk_fixed_length_boundary(block):
+                chunks.append(piece)
+            buf = []
+
+    if buf:
+        for piece in chunk_fixed_length_boundary("".join(buf)):
+            chunks.append(piece)
+
+    # 去重与清洗
+    seen = set()
+    dedup: List[str] = []
+    for c in chunks:
+        key = c.strip()
+        if key and key not in seen:
+            dedup.append(key)
+            seen.add(key)
+    return dedup
