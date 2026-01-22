@@ -13,8 +13,8 @@ from fastapi import HTTPException
 from agentlz.config.settings import get_settings
 from agentlz.repositories import record_repository as repo
 from agentlz.repositories import document_repository as doc_repo
-from agentlz.services import document_service as doc_service
-from agentlz.services import chunk_embeddings_service as emb_service
+from agentlz.services.rag import document_service as doc_service
+from agentlz.services.rag import chunk_embeddings_service as emb_service
 from agentlz.repositories import session_repository as sess_repo
 import json
 from agentlz.agents.rag.rag_agent import get_rag_query_agent, rag_build_queries

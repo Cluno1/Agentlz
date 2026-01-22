@@ -1,4 +1,5 @@
 from __future__ import annotations
+import queue
 from typing import Any, Dict, List, Optional, Tuple, Iterator
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -12,7 +13,7 @@ from agentlz.repositories import agent_mcp_repository as mcp_rel_repo
 from agentlz.repositories import agent_document_repository as doc_rel_repo
 from agentlz.repositories import mcp_repository as mcp_repo
 from agentlz.repositories import document_repository as doc_repo
-from agentlz.services.rag_service import agent_chat_get_rag
+from agentlz.services.rag.rag_service import agent_chat_get_rag
 from agentlz.repositories import record_repository as record_repo
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model

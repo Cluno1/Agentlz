@@ -23,18 +23,18 @@ def _set_tenant(cur, tenant_id: str) -> None:
     cur.execute("SET LOCAL app.current_tenant = %s", (tenant_id,))
 
 
-def create_chunk_embedding(*, tenant_id: str, chunk_id: str, doc_id: str, embedding: Sequence[float], content: Optional[str] = None) -> Dict[str, Any]:
+def create_chunk_embedding(*, tenant_id: str, chunk_id: str, doc_id: str, embedding: Sequence[float], content: Optional[str] = None, chunk_index: int = 0, length: int = 0, strategy: int = 0) -> Dict[str, Any]:
     v = _to_vector_literal(embedding)
     with closing(get_pg_conn()) as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             _set_tenant(cur, tenant_id)
             cur.execute(
-                "INSERT INTO chunk_embeddings (chunk_id, tenant_id, doc_id, embedding, content) VALUES (%s,%s,%s,%s::vector,%s) ON CONFLICT (chunk_id) DO NOTHING",
-                (chunk_id, tenant_id, doc_id, v, content),
+                "INSERT INTO chunk_embeddings (chunk_id, tenant_id, doc_id, embedding, content, chunk_index, length, strategy) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s) ON CONFLICT (chunk_id) DO NOTHING",
+                (chunk_id, tenant_id, doc_id, v, content, chunk_index, length, strategy),
             )
             cur.execute(
-                "SELECT chunk_id, tenant_id, doc_id, content, created_at FROM chunk_embeddings WHERE chunk_id=%s",
+                "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, length, strategy FROM chunk_embeddings WHERE chunk_id=%s",
                 (chunk_id,),
             )
             row = cur.fetchone()
@@ -47,6 +47,9 @@ def create_chunk_embedding(*, tenant_id: str, chunk_id: str, doc_id: str, embedd
         "doc_id": row[2],
         "content": row[3],
         "created_at": row[4],
+        "chunk_index": row[5],
+        "length": row[6],
+        "strategy": row[7],
     }
 
 
@@ -86,21 +89,34 @@ def get_chunk_embedding(*, tenant_id: str, chunk_id: str, include_vector: bool =
 
 
 def list_chunk_embeddings(*, tenant_id: str, doc_id: Optional[str] = None, limit: int = 20, offset: int = 0, include_vector: bool = False) -> List[Dict[str, Any]]:
+    """列出分块嵌入（支持返回 chunk_index 与 strategy）
+    
+    参数：
+        - tenant_id: 租户标识（RLS）
+        - doc_id: 可选文档ID过滤
+        - limit/offset: 分页参数
+        - include_vector: 是否同时返回 embedding 向量（文本形式）
+    
+    返回：
+        - 每条记录包含：chunk_id, tenant_id, doc_id, content, created_at, chunk_index, strategy
+        - 当 include_vector=True 时，额外返回 embedding（解析为 float 数组）
+    """
     with closing(get_pg_conn()) as conn:
         with conn.cursor() as cur:
             _set_tenant(cur, tenant_id)
             if include_vector:
                 if doc_id:
                     cur.execute(
-                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, embedding::text FROM chunk_embeddings WHERE doc_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, strategy, embedding::text FROM chunk_embeddings WHERE doc_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s",
                         (doc_id, limit, offset),
                     )
                 else:
                     cur.execute(
-                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, embedding::text FROM chunk_embeddings ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, strategy, embedding::text FROM chunk_embeddings ORDER BY created_at DESC LIMIT %s OFFSET %s",
                         (limit, offset),
                     )
                 rows = cur.fetchall()
+                # 索引说明：0-id,1-tenant,2-doc,3-content,4-created,5-chunk_index,6-strategy,7-embedding::text
                 return [
                     {
                         "chunk_id": r[0],
@@ -108,22 +124,25 @@ def list_chunk_embeddings(*, tenant_id: str, doc_id: Optional[str] = None, limit
                         "doc_id": r[2],
                         "content": r[3],
                         "created_at": r[4],
-                        "embedding": _parse_vector_text(r[5] or ""),
+                        "chunk_index": r[5],
+                        "strategy": str(r[6]) if r[6] is not None else "0",
+                        "embedding": _parse_vector_text(r[7] or ""),
                     }
                     for r in rows
                 ]
             else:
                 if doc_id:
                     cur.execute(
-                        "SELECT chunk_id, tenant_id, doc_id, content, created_at FROM chunk_embeddings WHERE doc_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, strategy FROM chunk_embeddings WHERE doc_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s",
                         (doc_id, limit, offset),
                     )
                 else:
                     cur.execute(
-                        "SELECT chunk_id, tenant_id, doc_id, content, created_at FROM chunk_embeddings ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, strategy FROM chunk_embeddings ORDER BY created_at DESC LIMIT %s OFFSET %s",
                         (limit, offset),
                     )
                 rows = cur.fetchall()
+                # 索引说明：0-id,1-tenant,2-doc,3-content,4-created,5-chunk_index,6-strategy
                 return [
                     {
                         "chunk_id": r[0],
@@ -131,6 +150,8 @@ def list_chunk_embeddings(*, tenant_id: str, doc_id: Optional[str] = None, limit
                         "doc_id": r[2],
                         "content": r[3],
                         "created_at": r[4],
+                        "chunk_index": r[5],
+                        "strategy": str(r[6]) if r[6] is not None else "0",
                     }
                     for r in rows
                 ]

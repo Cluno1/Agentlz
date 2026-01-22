@@ -3,9 +3,10 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, Query, File, Form, UploadFile
 from fastapi.responses import Response
 from agentlz.core.logger import setup_logging
-from agentlz.schemas.document import DocumentUpdate, DocumentUpload, DocumentQuery
+from agentlz.schemas.document import DocumentUpdate, DocumentUpload, DocumentQuery, ChunkStrategyPayload
 from agentlz.schemas.responses import Result
-from agentlz.services import document_service
+from agentlz.services.rag import document_service
+from agentlz.services.rag import chunk_embeddings_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
 
 logger = setup_logging()
@@ -93,6 +94,7 @@ def create_document(
     meta_https: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),  # JSON字符串格式
     type: str = Form("self"),
+    strategy: Optional[str] = Form(None),
     claims: Dict[str, Any] = Depends(require_auth)
 ):
     """创建新文档（需要管理员权限）
@@ -105,6 +107,7 @@ def create_document(
     - meta_https: 元数据链接（可选）
     - tags: 标签，JSON字符串格式（可选）
     - type: 文档类型（system, self, tenant）
+    - strategy: 切割策略数组（字符串形式，如 ["0","1"] 或 [0,1]）
     """
     logger.info(f"create_document: title={title}, type={type}, filename={document.filename}")
     
@@ -131,7 +134,17 @@ def create_document(
         logger.error(f"文件读取失败: {e}")
         raise HTTPException(status_code=400, detail=f"文件读取失败: {str(e)}")
     
-    # 创建payload对象
+    # 创建payload对象（strategy 支持JSON数组字符串，如 ["0","1"] 或 [0,1]）
+    import json
+    strategy_list = None
+    if strategy:
+        try:
+            strategy_list = json.loads(strategy)
+            if not isinstance(strategy_list, list):
+                raise HTTPException(status_code=400, detail="strategy 必须是数组格式")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="strategy 格式错误，必须是有效的JSON数组")
+
     payload = DocumentUpload(
         document=file_content,
         document_type=document_type,
@@ -139,7 +152,8 @@ def create_document(
         description=description,
         meta_https=meta_https,
         tags=tags_list,
-        type=type
+        type=type,
+        strategy=strategy_list
     )
     
     tenant_id = require_tenant_id(request)
@@ -149,3 +163,92 @@ def create_document(
         claims=claims
     )
     return Result.ok(data=row)
+
+@router.put("/rag/{doc_id}/chunk", response_model=Result)
+def publish_document_chunk(
+    doc_id: str,
+    payload: ChunkStrategyPayload,
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth)
+):
+    """为指定文档发布分块解析任务（RabbitMQ）
+    
+    输入：
+    - strategy: 策略列表（如 [1,2,3]）
+    
+    说明：
+    - 鉴权复用 document_service.get_document_service 内部逻辑
+    - 每个策略将发布一条解析任务到队列 doc_parse_tasks
+    """
+    tenant_id = require_tenant_id(request)
+    ret = document_service.publish_document_chunk_tasks_service(
+        doc_id=doc_id,
+        strategies=payload.strategy,
+        tenant_id=tenant_id,
+        claims=claims
+    )
+    return Result.ok(data=ret)
+
+@router.get("/rag/{doc_id}/strategy", response_model=Result)
+def list_document_strategies(
+    doc_id: str,
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth),
+    limit: int = Query(20, ge=1, le=200, description="每页数量上限"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+    include_vector: bool = Query(False, description="是否返回向量字段")
+):
+    """列出指定文档的所有切割策略的分块列表（分页）
+    
+    返回结构：
+    - [{doc_id, tenant_id, "0":[{index, chunk_id, content, created_at, embedding?}], "1":[...], ...}]
+    """
+    logger.info(f"list_document_strategies: doc_id={doc_id}, limit={limit}, offset={offset}, include_vector={include_vector}")
+    tenant_id = require_tenant_id(request)
+    # 使用文档服务进行权限校验（内部已包含鉴权逻辑）
+    row = document_service.get_document_service(doc_id=doc_id, tenant_id=tenant_id, claims=claims)
+    if not row:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    # 获取聚合后的分块列表（不传 strategy，返回所有策略）
+    data = chunk_embeddings_service.list_chunk_embeddings_service(
+        tenant_id=tenant_id,
+        doc_id=doc_id,
+        strategy=None,
+        limit=limit,
+        offset=offset,
+        include_vector=include_vector
+    )
+    return Result.ok(data=data)
+
+
+@router.get("/rag/{doc_id}/strategy/{strategy}", response_model=Result)
+def list_document_strategy_chunks(
+    doc_id: str,
+    strategy: str,
+    request: Request,
+    claims: Dict[str, Any] = Depends(require_auth),
+    limit: int = Query(20, ge=1, le=200, description="每页数量上限"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+    include_vector: bool = Query(False, description="是否返回向量字段")
+):
+    """列出指定文档在特定策略下的分块列表（分页）
+    
+    返回结构：
+    - [{doc_id, tenant_id, "<strategy>":[{index, chunk_id, content, created_at, embedding?}]}]
+    """
+    logger.info(f"list_document_strategy_chunks: doc_id={doc_id}, strategy={strategy}, limit={limit}, offset={offset}, include_vector={include_vector}")
+    tenant_id = require_tenant_id(request)
+    # 使用文档服务进行权限校验（内部已包含鉴权逻辑）
+    row = document_service.get_document_service(doc_id=doc_id, tenant_id=tenant_id, claims=claims)
+    if not row:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    # 获取聚合后的分块列表（仅返回指定策略分组）
+    data = chunk_embeddings_service.list_chunk_embeddings_service(
+        tenant_id=tenant_id,
+        doc_id=doc_id,
+        strategy=strategy,
+        limit=limit,
+        offset=offset,
+        include_vector=include_vector
+    )
+    return Result.ok(data=data)

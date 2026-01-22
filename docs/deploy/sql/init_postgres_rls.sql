@@ -1,4 +1,4 @@
--- Active: 1763972669865@@117.72.162.89@5432@agentlz
+-- Active: 1763648474172@@117.72.162.89@5432@agentlz
 CREATE EXTENSION IF NOT EXISTS vector;
 
 DROP TABLE IF EXISTS chunk_embeddings;
@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
     embedding VECTOR(1536) NOT NULL,
     content TEXT,
     length INTEGER DEFAULT 0, -- 分块长度
+    strategy VARCHAR(50) DEFAULT '0', -- 切割策略
     created_at TIMESTAMPTZ DEFAULT now()
 );
 

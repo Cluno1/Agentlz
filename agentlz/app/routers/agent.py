@@ -4,10 +4,12 @@ from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import StreamingResponse
 from agentlz.core.logger import setup_logging
 from agentlz.schemas.responses import Result
-from agentlz.services import agent_service, mcp_service, rag_service
+from agentlz.services import agent_service, mcp_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
 from agentlz.schemas.agent import AgentCreate, AgentUpdate, AgentApiUpdate, AgentChatInput, AgentChatHistoryInput, AgentChatSessionInput
 from typing import List
+
+from agentlz.services.rag import rag_service
 
 logger = setup_logging()
 

@@ -38,3 +38,7 @@ class DocumentUpload(BaseModel):
     meta_https: Optional[str] = None
     tags: Optional[list[str]] = None
     type: str = "self" # 上传的文档的租户形式，self表示该文档的tenant_id == ‘default’,tenant表示该文档的tenant_id == user.tenant_id,system表示该文档的tenant_id == ’system‘
+    strategy: Optional[list[str]] = None # 切割策略数组（字符串形式）
+
+class ChunkStrategyPayload(BaseModel):
+    strategy: list[int]

@@ -7,7 +7,7 @@ from agentlz.core.external_services import create_rabbitmq_connection
 from agentlz.core.logger import setup_logging
 import pika
 
-from agentlz.services.document_service import process_document_from_cos_https
+from agentlz.services.rag.document_service import process_document_from_cos_https
 from agentlz.services.cache_service import cache_get
 from agentlz.repositories import session_repository as sess_repo
 
@@ -121,16 +121,17 @@ class MQService:
             save_https = message.get('save_https')
             document_type = message.get('document_type')
             tenant_id = message.get('tenant_id')
+            strategy = message.get('strategy', 0)
             
             if not all([doc_id, save_https, document_type,tenant_id]):
                 raise BizError("消息格式不完整，缺少必要字段")
                 
             # 3. 真正处理文档
-            logger.info(f"开始处理文档 {doc_id}，类型: {document_type}")
+            logger.info(f"开始处理文档 {doc_id}，类型: {document_type}，策略: {strategy}")
             
             
             # 调用文档处理服务
-            process_document_from_cos_https(save_https, document_type,doc_id,tenant_id)
+            process_document_from_cos_https(save_https, document_type, doc_id, tenant_id, strategy)
             
             logger.info(f"文档 {doc_id} 处理完成")
             
