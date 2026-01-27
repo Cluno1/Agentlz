@@ -69,7 +69,7 @@ def rag_retrieve(input_data: RAGRetrieveInput) -> RAGRetrieveOutput:
     return RAGRetrieveOutput(items=[])
 
 
-def get_rag_query_agent() -> Runnable[RAGQueryInput, RAGQueryOutput]:
+def get_rag_query_agent(llm_override: object = None) -> Runnable[RAGQueryInput, RAGQueryOutput]:
     """
     构建并返回一个“查询占位代理”。
 
@@ -82,10 +82,10 @@ def get_rag_query_agent() -> Runnable[RAGQueryInput, RAGQueryOutput]:
     - 正常情况下，绑定结构化输出为 `RAGQueryOutput`，方便统一解析。
     """
     settings = get_settings()
-    llm = get_model(settings=settings)
+    llm = llm_override if llm_override is not None else get_model(settings=settings)
     prompt = ChatPromptTemplate.from_messages([
         ("system", RAG_QUERY_SYSTEM_PROMPT),
-        ("human", "{message}"),
+        ("human", "历史记录（可选）：\n<history></history>\n当前问题：\n<current_query>{message}</current_query>"),
     ])
     if llm is None:
         return prompt

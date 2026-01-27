@@ -16,7 +16,7 @@ from agentlz.repositories import document_repository as doc_repo
 from agentlz.services.rag.rag_service import agent_chat_get_rag
 from agentlz.repositories import record_repository as record_repo
 from langchain_core.prompts import ChatPromptTemplate
-from agentlz.core.model_factory import get_model
+from agentlz.core.model_factory import get_model, get_model_by_name
 from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
 import uuid
 import json
@@ -610,9 +610,45 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
     logger.debug(f"进入 [agent_llm_answer_stream] agent_id={agent_id} record_id={record_id}")
     settings = get_settings()
-    llm = get_model(settings=settings, streaming=True)
+    agent_row: Optional[Dict[str, Any]] = None
+    try:
+        agent_row = repo.get_agent_by_id_any_tenant(agent_id=int(agent_id), table_name=_tables()["agent"])
+    except Exception:
+        agent_row = None
+    system_prompt_text = RAG_ANSWER_SYSTEM_PROMPT
+    if agent_row:
+        sp = agent_row.get("system_prompt")
+        if isinstance(sp, str) and sp.strip() != "":
+            system_prompt_text = sp
+    meta_conf: Optional[Dict[str, Any]] = None
+    if agent_row:
+        mc = agent_row.get("meta")
+        if isinstance(mc, str):
+            try:
+                mc = json.loads(mc)
+            except Exception:
+                mc = None
+        if isinstance(mc, dict):
+            meta_conf = mc
+    llm = None
+    if isinstance(meta_conf, dict):
+        model_name = str(meta_conf.get("model_name") or "") or None
+        chat_api_key = meta_conf.get("chatopenai_api_key")
+        chat_base_url = meta_conf.get("chatopenai_base_url")
+        openai_key = meta_conf.get("openai_api_key")
+        if model_name or chat_api_key or chat_base_url or openai_key:
+            llm = get_model_by_name(
+                settings=settings,
+                model_name=model_name or settings.model_name,
+                streaming=True,
+                chatopenai_api_key=chat_api_key,
+                chatopenai_base_url=chat_base_url,
+                openai_api_key=openai_key,
+            )
+    if llm is None:
+        llm = get_model(settings=settings, streaming=True)
     prompt = ChatPromptTemplate.from_messages([
-        ("system", RAG_ANSWER_SYSTEM_PROMPT),
+        ("system", system_prompt_text),
         ("human", "用户问题：{message}\n历史上下文：\n{history}\n候选文档：\n{doc}"),
     ])
     if llm is None:
@@ -842,5 +878,5 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
         record_id = int(out.get("record_id") or record_id)
     except Exception:
         pass
-    logger.debug(f" 完成 [agent_chat_get_rag],  继续 [agent_chat_service] rag_ready record_id={record_id}")
+    logger.debug(f" 完成 [agent_chat_get_rag], out 返回: {out},  继续 [agent_chat_service] rag_ready record_id={record_id}")
     return agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)

@@ -118,6 +118,8 @@ class Settings(BaseSettings):
         default="session", env="SESSION_TABLE_NAME")
     record_session_table_name: str = Field(
         default="record_session", env="RECORD_SESSION_TABLE_NAME")
+    # 模型表
+    model_table_name: str = Field(default="model", env="MODEL_TABLE_NAME")
 
 
 

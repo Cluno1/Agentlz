@@ -1,4 +1,5 @@
 from langchain_openai import ChatOpenAI
+from typing import Optional
 
 from agentlz.config.settings import Settings
 from .logger import setup_logging
@@ -41,7 +42,14 @@ def get_model(settings: Settings, streaming: bool = False) -> ChatOpenAI:
         return None
 
 
-def get_model_by_name(settings: Settings, model_name: str, streaming: bool = False) -> ChatOpenAI:
+def get_model_by_name(
+    settings: Settings,
+    model_name: str,
+    streaming: bool = False,
+    chatopenai_api_key: Optional[str] = None,
+    chatopenai_base_url: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
+) -> ChatOpenAI:
     """Return a configured chat model instance with explicit model name override.
 
     参数:
@@ -64,7 +72,18 @@ def get_model_by_name(settings: Settings, model_name: str, streaming: bool = Fal
         "streaming": streaming,
     }
 
-    if settings.chatopenai_api_key and settings.chatopenai_base_url:
+    if chatopenai_api_key and chatopenai_base_url:
+        return ChatOpenAI(
+            **common_kwargs,
+            api_key=chatopenai_api_key,
+            base_url=chatopenai_base_url,
+        )
+    elif openai_api_key:
+        return ChatOpenAI(
+            **common_kwargs,
+            api_key=openai_api_key,
+        )
+    elif settings.chatopenai_api_key and settings.chatopenai_base_url:
         return ChatOpenAI(
             **common_kwargs,
             api_key=settings.chatopenai_api_key,

@@ -22,6 +22,8 @@ from agentlz.schemas.rag import RAGQueryInput, RAGQueryOutput
 from agentlz.core.external_services import get_redis_client
 import time
 import uuid
+from agentlz.core.model_factory import get_model_by_name, get_model
+from agentlz.repositories import agent_repository as agent_repo
 
 
 def _tables() -> Dict[str, str]:
@@ -501,7 +503,35 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
         # message 不为空时，才进行rag检索
         if isinstance(message, str) and message.strip() != "":
             try:
-                agent = get_rag_query_agent()
+                llm_override = None
+                try:
+                    s_agent = get_settings()
+                    agent_table = getattr(s_agent, "agent_table_name", "agent")
+                    arow = agent_repo.get_agent_by_id_any_tenant(agent_id=int(agent_id), table_name=agent_table)
+                except Exception:
+                    arow = None
+                if arow:
+                    mc = arow.get("meta")
+                    if isinstance(mc, str):
+                        try:
+                            mc = json.loads(mc)
+                        except Exception:
+                            mc = None
+                    if isinstance(mc, dict):
+                        model_name = str(mc.get("model_name") or "") or None
+                        chat_api_key = mc.get("chatopenai_api_key")
+                        chat_base_url = mc.get("chatopenai_base_url")
+                        openai_key = mc.get("openai_api_key")
+                        if model_name or chat_api_key or chat_base_url or openai_key:
+                            llm_override = get_model_by_name(
+                                settings=s_agent,
+                                model_name=model_name or s_agent.model_name,
+                                streaming=False,
+                                chatopenai_api_key=chat_api_key,
+                                chatopenai_base_url=chat_base_url,
+                                openai_api_key=openai_key,
+                            )
+                agent = get_rag_query_agent(llm_override)
                 combined_msg = (
                     f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
                     f"——分隔线——\n"
@@ -518,6 +548,28 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     sr = resp["structured_response"]
                     try:
                         optimized_msgs = list(getattr(sr, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+                elif isinstance(resp, dict) and resp.get("messages") is not None:
+                    try:
+                        optimized_msgs = list(resp.get("messages") or [])
+                    except Exception:
+                        optimized_msgs = []
+                elif hasattr(resp, "messages"):
+                    try:
+                        optimized_msgs = list(getattr(resp, "messages", []) or [])
+                    except Exception:
+                        optimized_msgs = []
+                elif isinstance(resp, list):
+                    try:
+                        optimized_msgs = [str(x) for x in resp]
+                    except Exception:
+                        optimized_msgs = []
+                elif isinstance(resp, str):
+                    try:
+                        _tmp = json.loads(resp)
+                        if isinstance(_tmp, list):
+                            optimized_msgs = [str(x) for x in _tmp]
                     except Exception:
                         optimized_msgs = []
                 if not optimized_msgs:
