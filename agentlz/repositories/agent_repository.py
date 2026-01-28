@@ -439,6 +439,11 @@ def update_agent(
             if col == "disabled":
                 # 布尔值统一转为 tinyint(1)
                 val = int(bool(val))
+            if col == "meta":
+                if isinstance(val, (dict, list)):
+                    val = json.dumps(val, ensure_ascii=False)
+                elif not isinstance(val, str):
+                    val = json.dumps({}, ensure_ascii=False)
             sets.append(f"{col} = :{col}")
             params[col] = val
 

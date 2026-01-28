@@ -176,9 +176,6 @@ def get_doc_topk_messages(
     return out
 
 
-
-
-
 def check_all_session_detail_by_record(*, record_id: int) -> List[Dict[str, Any]]:
     """检查记录关联的所有会话（输入/输出）
 
@@ -233,6 +230,7 @@ def check_session_for_rag(
     """
     logger = setup_logging(level="DEBUG", name="agentlz.rag_service", prefix="[RAG 服务]")
     logger.debug(f"进入 [check_session_for_rag] record_id={record_id} li={limit_input} lo={limit_output}")
+    # 阶段1：参数校验与限制归一化（负值归零）
     if int(record_id) <= 0:
         return []
     li = int(limit_input) if isinstance(limit_input, int) else 0
@@ -241,10 +239,12 @@ def check_session_for_rag(
         li = 0
     if lo < 0:
         lo = 0
+    # 阶段2：读取数据库中的会话行（用于基准数据与缺失补齐）
     tables = _tables()
     table = tables["session"]
     rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=table)
     try:
+        # 阶段3：从 Redis 读取增量会话快照（scan + get），构建 items
         rc = get_redis_client()
         rid = int(record_id)
         patterns = [f"record:*:{rid}:*"]
@@ -272,6 +272,7 @@ def check_session_for_rag(
                 })
             except Exception:
                 continue
+        # 阶段4：对齐缓存与数据库数量；必要时设置过期、补齐缺失项到 Redis 与 items
         db_count = len(rows)
         redis_count = len(items)
         ttl = 3600
@@ -321,11 +322,13 @@ def check_session_for_rag(
                         })
                     except Exception:
                         continue
+        # 阶段5：若存在增量，按创建时间排序并与数据库行合并
         if items:
             items.sort(key=lambda x: int(x.get("created_at") or 0))
             rows.extend(items)
     except Exception:
         pass
+    # 阶段6：从末尾倒数应用 limit_input/limit_output，解析 JSON；未包含的置为 None
     n = len(rows)
     out: List[Dict[str, Any]] = []
     for idx, r in enumerate(rows):
@@ -348,6 +351,7 @@ def check_session_for_rag(
         else:
             outp = None
         out.append({"input": inp, "output": outp, "zip": z})
+    # 阶段7：记录数量并返回结构化结果
     logger.debug(f"完成 [check_session_for_rag] 历史纪录检查到的数量:{len(out)}")
     return out
 
@@ -442,6 +446,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
      }
     """
 
+    # 阶段1：初始化日志与上下文（配置/表名等）
     logger = setup_logging(level="DEBUG", name="agentlz.rag_service", prefix="[RAG 服务]")
     logger.debug(f"进入 [agent_chat_get_rag] agent_id={agent_id} record_id={record_id}")
     s = get_settings()
@@ -449,13 +454,14 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
     history: List[Dict[str, Any]] = []
     his_items: List[Tuple[str, str, str]] = []
     if int(record_id) > 0:
-        # 1. 检查会话是否存在历史记录
+        # 阶段2：拉取该记录的历史会话（最近若干轮），用于后续指代消解
         history = check_session_for_rag(record_id=int(record_id), limit_input=5, limit_output=5)
         his_items: List[Tuple[str, str, str]] = []
         for x in history:
             z = x.get("zip")
             inp = x.get("input")
             outp = x.get("output")
+            # 将输入与输出统一清洗为字符串（JSON/对象转字符串），避免提示词拼接异常
             if inp is None or (isinstance(inp, str) and inp.strip() == ""):
                 inp = ""
             if outp is None or (isinstance(outp, str) and outp.strip() == ""):
@@ -474,11 +480,13 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     outp = str(outp)
             his_items.append((inp or "", outp or "", z or ""))
     else :
+        # 无历史记录的场景，后续依旧可进行检索（history 为空）
         logger.debug(f"没有历史记录")
         his_items=[]
         history=[]
     
 
+    # 阶段3：将历史条目格式化为拼接字符串，作为提示词中的 <history> 参考
     his_parts: List[str] = []
     for i, (inp, outp, z) in enumerate(his_items, start=1):
         his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")
@@ -486,6 +494,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
 
     # 没有历史记录时，创建新的记录
     if int(record_id) <= 0:
+        # 阶段4：若无记录ID，基于本次 message 创建新记录以承载后续会话
         logger.debug(f"创建新的记录")
         nm = str(message or "")
         created_row = repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=tables["record"])
@@ -494,7 +503,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
         except Exception:
             record_id = int(created_row.get("id") or -1)
     logger.debug(f"当前查询轮次属于的历史纪录: record_id={record_id}")
-    # 2. 构建rag优化后的查询短句数组并进行rag检索
+    # 阶段5：调用查询代理生成“优化后的检索短句”，并据此执行检索
     try:
         rag: List[Dict[str, Any]] = []
         optimized_msgs: List[str] = []
@@ -503,6 +512,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
         # message 不为空时，才进行rag检索
         if isinstance(message, str) and message.strip() != "":
             try:
+                # 阶段5.1：根据 agent 的 meta（模型名与密钥）构建或覆盖模型实例
                 llm_override = None
                 try:
                     s_agent = get_settings()
@@ -531,6 +541,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                                 chatopenai_base_url=chat_base_url,
                                 openai_api_key=openai_key,
                             )
+                # 阶段5.2：构造符合提示词规范的输入文本（历史仅用于指代消解，短句仅从当前问题抽取）
                 agent = get_rag_query_agent(llm_override)
                 combined_msg = (
                     f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
@@ -540,10 +551,12 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                 )
                 rq_inp = RAGQueryInput(message=combined_msg, max_items=6)
                 logger.debug(f"进入 agent 整合 messages")
+                # 阶段5.3：调用查询代理，期望返回 JSON 数组形式的检索短句
                 resp: Any = agent.invoke(rq_inp.model_dump())
 
                 logger.debug(f"继续 [agent_chat_get_rag] agent理解message完毕, 输出了: resp={resp}")
 
+                # 阶段5.4：解析响应，兼容多种返回结构（structured_response / dict.messages / 属性 / list / JSON字符串）
                 if isinstance(resp, dict) and resp.get("structured_response") is not None:
                     sr = resp["structured_response"]
                     try:
@@ -572,6 +585,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                             optimized_msgs = [str(x) for x in _tmp]
                     except Exception:
                         optimized_msgs = []
+                # 阶段5.5：若代理未返回可用短句，回退到本地规则提取
                 if not optimized_msgs:
                     try:
                         _q = RAGQueryInput(message=str(message), max_items=6)
@@ -580,6 +594,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     except Exception:
                         optimized_msgs = []
             except Exception:
+                # 阶段5.6：代理调用发生异常时的防御性回退（本地规则提取）
                 logger.error(f"错误 [agent_chat_get_rag] agent理解message失败, message={message}")
                 try:
                     combined_msg = (
@@ -594,10 +609,12 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                 except Exception:
                     optimized_msgs = []
             
+            # 阶段6：使用优化后的短句数组执行文档检索，获取 TopK 文档
             logger.debug(f"继续 [agent_chat_get_rag] 开始[get_doc_topk_messages] 优化后的messages={optimized_msgs}")
             rag = get_doc_topk_messages(agent_id=int(agent_id), message=message, messages=optimized_msgs)
             
         
+        # 阶段7：汇总检索到的文档内容为字符串，组装最终输出对象
         doc_texts: List[str] = []
         for x in rag:
             c = x.get("content")
@@ -610,6 +627,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
         logger.debug(f"完成 [agent_chat_get_rag] record_id={record_id}")
         return out
     except Exception:
+        # 阶段8：整体流程异常时的兜底返回（空文档与空历史，保留 message 与 record_id）
         logger.error(f"错误 [agent_chat_get_rag] record_id={record_id}")
         return {"message": str(message or ""), "doc": "", "history": "", "record_id": int(record_id)}
 

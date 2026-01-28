@@ -347,7 +347,6 @@ def chat_agent(payload: AgentChatInput, request: Request):
 
 
 
-
 def _resolve_agent_id_for_chat_history(payload: AgentChatHistoryInput, request: Request) -> int:
     """解析 Agent ID 用于聊天历史记录查询"""
     auth_header = request.headers.get("Authorization")

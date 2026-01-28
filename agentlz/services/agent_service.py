@@ -137,7 +137,26 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             seen_d.add(did_str)
             doc_rel_repo.create_agent_document(payload={"agent_id": int(
                 row["id"]), "document_id": did_str}, table_name=_tables()["agent_document"])
-    return _process_agent_meta(row)
+    r = _process_agent_meta(row)
+    r.pop("api_name", None)
+    r.pop("api_key", None)
+    rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
+    m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+    m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
+    r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+    rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
+    d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+    doc_items: List[Dict[str, Any]] = []
+    for did in d_ids:
+        d = doc_repo.get_document_with_names_by_id_any_tenant(
+            doc_id=did,
+            table_name=_tables()["doc"],
+            user_table_name=_tables()["user"],
+            tenant_table_name=_tables()["tenant"],
+        ) or {}
+        doc_items.append({"id": did, "name": str(d.get("title") or "")})
+    r["documents"] = doc_items
+    return r
 
 
 def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -213,7 +232,28 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
     # 返回更新后的agent信息，处理meta字段反序列化
     if updated:
         updated_agent = repo.get_agent_by_id_any_tenant(agent_id=agent_id, table_name=agent_table)
-        return _process_agent_meta(dict(updated_agent)) if updated_agent else None
+        if not updated_agent:
+            return None
+        r = _process_agent_meta(dict(updated_agent))
+        r.pop("api_name", None)
+        r.pop("api_key", None)
+        rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
+        m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+        m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
+        r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+        rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
+        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+        doc_items: List[Dict[str, Any]] = []
+        for did in d_ids:
+            d = doc_repo.get_document_with_names_by_id_any_tenant(
+                doc_id=did,
+                table_name=_tables()["doc"],
+                user_table_name=_tables()["user"],
+                tenant_table_name=_tables()["tenant"],
+            ) or {}
+            doc_items.append({"id": did, "name": str(d.get("title") or "")})
+        r["documents"] = doc_items
+        return r
     return None
 
 
@@ -442,7 +482,26 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
         return None
     if not _check_agent_permission(row, uid, tenant_id):
         raise HTTPException(status_code=403, detail="没有权限")
-    return _process_agent_meta(dict(row))
+    r = _process_agent_meta(dict(row))
+    r.pop("api_name", None)
+    r.pop("api_key", None)
+    rel_m = mcp_rel_repo.list_agent_mcp(agent_id=int(r.get("id")), table_name=_tables()["agent_mcp"]) if r.get("id") is not None else []
+    m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
+    m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
+    r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+    rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
+    d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
+    doc_items: List[Dict[str, Any]] = []
+    for did in d_ids:
+        d = doc_repo.get_document_with_names_by_id_any_tenant(
+            doc_id=did,
+            table_name=_tables()["doc"],
+            user_table_name=_tables()["user"],
+            tenant_table_name=_tables()["tenant"],
+        ) or {}
+        doc_items.append({"id": did, "name": str(d.get("title") or "")})
+    r["documents"] = doc_items
+    return r
 
 
 def set_agent_mcp_allow_service(*, agent_id: int, mcp_agent_ids: List[int], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
