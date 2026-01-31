@@ -21,8 +21,9 @@ from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
 import uuid
 import json
 import time
-from agentlz.services.cache_service import cache_set
+from agentlz.services.cache_service import acquire_chat_lock, release_chat_lock, cache_set, chat_history_append, chat_history_set_item
 from agentlz.core.external_services import publish_to_rabbitmq
+from agentlz.repositories import session_repository as sess_repo
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
@@ -722,7 +723,45 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
             lines = content.split("\n")
             frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
             yield frame
-            persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=content, meta=meta)
+            try:
+                request_id = None
+                if isinstance(meta, dict):
+                    request_id = str(meta.get("request_id") or "").strip() or None
+                if request_id is None:
+                    request_id = uuid.uuid4().hex
+                s = get_settings()
+                sess_table = getattr(s, "session_table_name", "session")
+                meta_input = {"text": str(out.get("message") or "")}
+                meta_output = {"text": str(content)}
+                sess_row, created = sess_repo.create_session_idempotent(
+                    record_id=int(record_id),
+                    request_id=str(request_id),
+                    meta_input=meta_input,
+                    meta_output=meta_output,
+                    table_name=sess_table,
+                )
+                sid = int(sess_row.get("id") or 0)
+                if sid > 0:
+                    item = {
+                        "session_id": sid,
+                        "count": int(sess_row.get("count") or 0),
+                        "input": meta_input,
+                        "output": meta_output,
+                        "zip": str(sess_row.get("zip") or ""),
+                        "zip_status": str(sess_row.get("zip_status") or "pending"),
+                        "created_at": str(sess_row.get("created_at") or ""),
+                    }
+                    if created:
+                        chat_history_append(record_id=int(record_id), session_id=sid, item=item, ttl=3600, limit=50)
+                        publish_to_rabbitmq(
+                            "zip_tasks",
+                            {"session_id": sid, "record_id": int(record_id), "agent_id": int(agent_id), "request_id": str(request_id)},
+                            durable=True,
+                        )
+                    else:
+                        chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
+            except Exception:
+                pass
             yield "data: [DONE]\n\n"
             logger.debug(f"完成 [agent_llm_answer_stream] record_id={record_id}")
         return _fallback()
@@ -766,7 +805,45 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
             lines = buf.split("\n")
             frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
             yield frame
-        persist_chat_to_cache_and_mq(agent_id=int(agent_id), record_id=int(record_id), input_text=str(out.get("message") or ""), output_text=acc, meta=meta)
+        try:
+            request_id = None
+            if isinstance(meta, dict):
+                request_id = str(meta.get("request_id") or "").strip() or None
+            if request_id is None:
+                request_id = uuid.uuid4().hex
+            s = get_settings()
+            sess_table = getattr(s, "session_table_name", "session")
+            meta_input = {"text": str(out.get("message") or "")}
+            meta_output = {"text": str(acc)}
+            sess_row, created = sess_repo.create_session_idempotent(
+                record_id=int(record_id),
+                request_id=str(request_id),
+                meta_input=meta_input,
+                meta_output=meta_output,
+                table_name=sess_table,
+            )
+            sid = int(sess_row.get("id") or 0)
+            if sid > 0:
+                item = {
+                    "session_id": sid,
+                    "count": int(sess_row.get("count") or 0),
+                    "input": meta_input,
+                    "output": meta_output,
+                    "zip": str(sess_row.get("zip") or ""),
+                    "zip_status": str(sess_row.get("zip_status") or "pending"),
+                    "created_at": str(sess_row.get("created_at") or ""),
+                }
+                if created:
+                    chat_history_append(record_id=int(record_id), session_id=sid, item=item, ttl=3600, limit=50)
+                    publish_to_rabbitmq(
+                        "zip_tasks",
+                        {"session_id": sid, "record_id": int(record_id), "agent_id": int(agent_id), "request_id": str(request_id)},
+                        durable=True,
+                    )
+                else:
+                    chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
+        except Exception:
+            pass
         yield "data: [DONE]\n\n"
         logger.debug(f"完成 [agent_llm_answer_stream] record_id={record_id}")
     return _gen()
@@ -930,12 +1007,87 @@ def agent_llm_exe_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], 
         yield frame
 
 def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    '''
+    '''
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
     logger.debug(f"进入 [agent_chat_service] agent_id={agent_id} record_id={record_id}")
+    req_id = None
+    try:
+        if isinstance(meta, dict):
+            req_id = str(meta.get("request_id") or "").strip() or None
+    except Exception:
+        req_id = None
+    if req_id is None:
+        req_id = uuid.uuid4().hex
+        try:
+            if meta is None:
+                meta = {}
+            if isinstance(meta, dict):
+                meta["request_id"] = req_id
+        except Exception:
+            pass
+
+    lock_record_id = int(record_id) if int(record_id) > 0 else None
+    locked = False
+
+    def _busy_reply(rid: int) -> Iterator[str]:
+        try:
+            yield f"data: {json.dumps({'record_id': int(rid)})}\n\n"
+        except Exception:
+            yield f"data: {json.dumps({'record_id': rid})}\n\n"
+        yield "data: 正在处理中，请稍后重试\n\n"
+        yield "data: [DONE]\n\n"
+
+    if lock_record_id is not None:
+        locked = acquire_chat_lock(record_id=int(lock_record_id), token=str(req_id), ttl_ms=30000)
+        if not locked:
+            return _busy_reply(int(lock_record_id))
+
     out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta)
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:
         pass
+
+    if lock_record_id is None and int(record_id) > 0:
+        lock_record_id = int(record_id)
+        locked = acquire_chat_lock(record_id=int(lock_record_id), token=str(req_id), ttl_ms=30000)
+        if not locked:
+            return _busy_reply(int(lock_record_id))
+
     logger.debug(f" 完成 [agent_chat_get_rag], out 返回: {out},  继续 [agent_chat_service] rag_ready record_id={record_id}")
-    return agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
+
+    def _wrap() -> Iterator[str]:
+        try:
+            try:
+                s = get_settings()
+                sess_table = getattr(s, "session_table_name", "session")
+                existed = sess_repo.get_session_by_request_id(request_id=str(req_id), table_name=sess_table)
+            except Exception:
+                existed = None
+            if existed and existed.get("meta_output") is not None:
+                mo = existed.get("meta_output")
+                try:
+                    parsed = json.loads(mo) if isinstance(mo, str) else mo
+                except Exception:
+                    parsed = mo
+                if isinstance(parsed, dict) and parsed.get("text") is not None:
+                    text_out = str(parsed.get("text") or "")
+                else:
+                    text_out = str(parsed or "")
+                try:
+                    yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
+                except Exception:
+                    yield f"data: {json.dumps({'record_id': record_id})}\n\n"
+                lines = text_out.split("\n")
+                frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
+                if frame.strip() != "":
+                    yield frame
+                yield "data: [DONE]\n\n"
+                return
+            yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
+        finally:
+            if locked and lock_record_id is not None:
+                release_chat_lock(record_id=int(lock_record_id), token=str(req_id))
+
+    return _wrap()

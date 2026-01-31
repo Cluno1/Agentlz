@@ -10,6 +10,11 @@ import pika
 from agentlz.services.rag.document_service import process_document_from_cos_https
 from agentlz.services.cache_service import cache_get
 from agentlz.repositories import session_repository as sess_repo
+from agentlz.repositories import agent_repository as agent_repo
+from agentlz.services.cache_service import chat_history_set_item
+from langchain_core.prompts import ChatPromptTemplate
+from agentlz.prompts.rag.zipper import ZIPPER_SYSTEM_PROMPT, ZIPPER_USER_PROMPT_TEMPLATE
+from agentlz.core.model_factory import get_model_by_name, get_model
 
 logger = setup_logging()
 class BizError(Exception):
@@ -63,10 +68,12 @@ class MQService:
                 # 声明队列并设置流控
                 self._channel.queue_declare(queue='doc_parse_tasks', durable=True)
                 self._channel.queue_declare(queue='chat_persist_tasks', durable=True)
+                self._channel.queue_declare(queue='zip_tasks', durable=True)
                 self._channel.basic_qos(prefetch_count=1)
 
                 logger.info("开始监听文档解析任务队列...")
                 logger.info("开始监听聊天持久化任务队列...")
+                logger.info("开始监听zip任务队列...")
 
                 # 设置消费者
                 self._channel.basic_consume(
@@ -77,6 +84,11 @@ class MQService:
                 self._channel.basic_consume(
                     queue='chat_persist_tasks',
                     on_message_callback=self._process_chat_persist_message,
+                    auto_ack=False
+                )
+                self._channel.basic_consume(
+                    queue='zip_tasks',
+                    on_message_callback=self._process_zip_task,
                     auto_ack=False
                 )
 
@@ -190,15 +202,147 @@ class MQService:
                 raise BizError("redis payload 缺少 input/output")
             s = get_settings()
             sess_table = getattr(s, "session_table_name", "session")
-            rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=sess_table)
-            next_count = 1
-            if rows:
+            sess_repo.create_session_idempotent(
+                record_id=int(record_id),
+                request_id=str(redis_key),
+                meta_input=inp,
+                meta_output=outp,
+                table_name=sess_table,
+            )
+
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except BizError as biz:
+            logger.error(f"业务异常，丢弃消息: {biz}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            save_to_dead_letter(body, reason=str(biz))
+        except Exception as sys_exc:
+            if retry >= max_retries:
+                logger.error(f"已达最大重试次数[{max_retries}]，丢弃消息")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    def _process_zip_task(self, ch, method, properties, body):
+        """处理 zip 生成任务（对单条 session 做摘要压缩）。
+
+        目标：
+        - 生成 zip 摘要并写入 MySQL（幂等：已有 zip 或 zip_status=done 则跳过）
+        - 写入成功后同步补齐 Redis 历史缓存对应条目的 zip/zip_status
+        """
+        headers = properties.headers or {}
+        retry = int(headers.get("x-retry", 0))
+        max_retries = self.settings.rabbitmq_max_retries
+
+        try:
+            # 阶段1：解析与校验消息体
+            message = json.loads(body.decode("utf-8"))
+            logger.info(f"收到zip任务: {message}")
+
+            session_id = message.get("session_id")
+            record_id = message.get("record_id")
+            agent_id = message.get("agent_id")
+            request_id = message.get("request_id")
+            if not all([session_id, record_id, agent_id, request_id]):
+                raise BizError("消息格式不完整，缺少必要字段")
+
+            # 阶段2：读取 session，做幂等判定
+            s = get_settings()
+            sess_table = getattr(s, "session_table_name", "session")
+            row = sess_repo.get_session_by_id(session_id=int(session_id), table_name=sess_table)
+            if not row:
+                raise BizError("session不存在")
+
+            if str(row.get("zip") or "").strip() != "" or str(row.get("zip_status") or "") == "done":
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            # 阶段3：抽取 input/output 文本；短对话直接保留，不走压缩
+            mi = row.get("meta_input")
+            mo = row.get("meta_output")
+            try:
+                inp_obj = json.loads(mi) if isinstance(mi, str) else mi
+            except Exception:
+                inp_obj = mi
+            try:
+                out_obj = json.loads(mo) if isinstance(mo, str) else mo
+            except Exception:
+                out_obj = mo
+            inp_text = inp_obj.get("text") if isinstance(inp_obj, dict) else inp_obj
+            out_text = out_obj.get("text") if isinstance(out_obj, dict) else out_obj
+            inp_text = str(inp_text or "")
+            out_text = str(out_text or "")
+
+            if len(inp_text) + len(out_text) <= 300:
+                zip_text = f"用户输入：{inp_text}\n大模型回答：{out_text}".strip()
+            else:
+                agent_table = getattr(s, "agent_table_name", "agent")
+                arow = None
                 try:
-                    last = rows[-1]
-                    next_count = int(last.get("count") or 0) + 1
+                    arow = agent_repo.get_agent_by_id_any_tenant(agent_id=int(agent_id), table_name=agent_table)
                 except Exception:
-                    next_count = 1
-            sess_repo.create_session(record_id=int(record_id), count=int(next_count), meta_input=inp, meta_output=outp, zip=str(session_id or ""), table_name=sess_table)
+                    arow = None
+                meta_conf = None
+                if arow:
+                    mc = arow.get("meta")
+                    if isinstance(mc, str):
+                        try:
+                            mc = json.loads(mc)
+                        except Exception:
+                            mc = None
+                    if isinstance(mc, dict):
+                        meta_conf = mc
+
+                llm = None
+                if isinstance(meta_conf, dict):
+                    model_name = str(meta_conf.get("zip_model_name") or meta_conf.get("model_name") or "") or None
+                    chat_api_key = meta_conf.get("chatopenai_api_key")
+                    chat_base_url = meta_conf.get("chatopenai_base_url")
+                    openai_key = meta_conf.get("openai_api_key")
+                    if model_name or chat_api_key or chat_base_url or openai_key:
+                        llm = get_model_by_name(
+                            settings=s,
+                            model_name=model_name or s.model_name,
+                            streaming=False,
+                            chatopenai_api_key=chat_api_key,
+                            chatopenai_base_url=chat_base_url,
+                            openai_api_key=openai_key,
+                        )
+                if llm is None:
+                    llm = get_model(settings=s, streaming=False)
+
+                prompt = ChatPromptTemplate.from_messages(
+                    [
+                        ("system", ZIPPER_SYSTEM_PROMPT),
+                        ("human", ZIPPER_USER_PROMPT_TEMPLATE),
+                    ]
+                )
+                chain = prompt | llm
+                try:
+                    resp = chain.invoke({"input": inp_text, "output": out_text})
+                    zip_text = str(getattr(resp, "content", resp) or "").strip()
+                except Exception as e:
+                    raise RuntimeError(str(e))
+
+            if zip_text == "":
+                raise BizError("zip生成为空")
+
+            # 阶段5：落库（仅 pending/空 zip 才更新），并回写 Redis 缓存
+            updated = sess_repo.update_session_zip_if_pending(
+                session_id=int(session_id),
+                zip_text=str(zip_text),
+                zip_status="done",
+                table_name=sess_table,
+            )
+            if updated:
+                item = {
+                    "session_id": int(session_id),
+                    "count": int(row.get("count") or 0),
+                    "input": inp_obj,
+                    "output": out_obj,
+                    "zip": str(zip_text),
+                    "zip_status": "done",
+                    "created_at": str(row.get("created_at") or ""),
+                }
+                chat_history_set_item(record_id=int(record_id), session_id=int(session_id), item=item, ttl=3600)
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -214,10 +358,10 @@ class MQService:
             else:
                 headers["x-retry"] = retry + 1
                 ch.basic_publish(
-                    exchange='',
+                    exchange="",
                     routing_key=method.routing_key,
                     body=body,
-                    properties=pika.BasicProperties(headers=headers)
+                    properties=pika.BasicProperties(headers=headers),
                 )
                 ch.basic_ack(delivery_tag=method.delivery_tag)
 

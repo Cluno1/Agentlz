@@ -24,6 +24,7 @@ import time
 import uuid
 from agentlz.core.model_factory import get_model_by_name, get_model
 from agentlz.repositories import agent_repository as agent_repo
+from agentlz.services.cache_service import chat_history_get, chat_history_overwrite
 
 
 def _tables() -> Dict[str, str]:
@@ -239,117 +240,52 @@ def check_session_for_rag(
         li = 0
     if lo < 0:
         lo = 0
-    # 阶段2：读取数据库中的会话行（用于基准数据与缺失补齐）
+    # 阶段2：读取 Redis 最近 50 条历史（ids+map）
     tables = _tables()
     table = tables["session"]
-    rows = sess_repo.list_sessions_by_record(record_id=int(record_id), table_name=table)
-    try:
-        # 阶段3：从 Redis 读取增量会话快照（scan + get），构建 items
-        rc = get_redis_client()
-        rid = int(record_id)
-        patterns = [f"record:*:{rid}:*"]
-        keys: List[str] = []
-        for p in patterns:
+    items = chat_history_get(record_id=int(record_id), limit=50)
+    if not items:
+        # 阶段3：Redis miss，从 MySQL 读取最近 50 并回填 Redis
+        rows = sess_repo.list_last_sessions(record_id=int(record_id), limit=50, table_name=table)
+        rebuilt: List[Dict[str, Any]] = []
+        for r in rows:
             try:
-                keys.extend(list(rc.scan_iter(p)))
+                sid = int(r.get("id"))
             except Exception:
                 continue
-        items: List[Dict[str, Any]] = []
-        for k in keys:
-            try:
-                v = rc.get(k)
-                if not v:
-                    continue
-                obj = json.loads(v)
-                mi = obj.get("input")
-                mo = obj.get("output")
-                ca = obj.get("created_at")
-                items.append({
-                    "meta_input": json.dumps(mi, ensure_ascii=False) if not isinstance(mi, str) else mi,
-                    "meta_output": json.dumps(mo, ensure_ascii=False) if not isinstance(mo, str) else mo,
-                    "zip": "",
-                    "created_at": ca,
-                })
-            except Exception:
-                continue
-        # 阶段4：对齐缓存与数据库数量；必要时设置过期、补齐缺失项到 Redis 与 items
-        db_count = len(rows)
-        redis_count = len(items)
-        ttl = 3600
-        if db_count > redis_count:
-            for k in keys:
-                try:
-                    rc.expire(k, ttl)
-                except Exception:
-                    pass
-            missing = db_count - redis_count
-            if missing > 0:
-                add_rows = rows[-missing:] if missing <= db_count else rows
-                for r in add_rows:
-                    try:
-                        mi = r.get("meta_input")
-                        mo = r.get("meta_output")
-                        count = r.get("count") or 1
-                        try:
-                            inp = json.loads(mi) if isinstance(mi, str) else mi
-                        except Exception:
-                            inp = mi
-                        try:
-                            outp = json.loads(mo) if isinstance(mo, str) else mo
-                        except Exception:
-                            outp = mo
-                        ca = r.get("created_at")
-                        try:
-                            ts = int(ca.timestamp())  # type: ignore
-                        except Exception:
-                            try:
-                                ts = int(ca)  # type: ignore
-                            except Exception:
-                                ts = int(time.time())
-                        sid = uuid.uuid4().hex[:8]
-                        key = f"record:0:{rid}:{ts}:{sid}"
-                        payload = {"input": inp, "output": outp, "created_at": ts}
-                        try:
-                            rc.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
-                        except Exception:
-                            pass
-                        items.append({
-                            "meta_input": json.dumps(inp, ensure_ascii=False) if not isinstance(inp, str) else inp,
-                            "meta_output": json.dumps(outp, ensure_ascii=False) if not isinstance(outp, str) else outp,
-                            "zip": "",
-                            "created_at": ts,
-                            "count": count,
-                        })
-                    except Exception:
-                        continue
-        # 阶段5：若存在增量，按创建时间排序并与数据库行合并
-        if items:
-            items.sort(key=lambda x: int(x.get("created_at") or 0))
-            rows.extend(items)
-    except Exception:
-        pass
-    # 阶段6：从末尾倒数应用 limit_input/limit_output，解析 JSON；未包含的置为 None
-    n = len(rows)
-    out: List[Dict[str, Any]] = []
-    for idx, r in enumerate(rows):
-        pos_from_end = n - idx
-        mi = r.get("meta_input")
-        mo = r.get("meta_output")
-        z = r.get("zip")
-        if pos_from_end <= li:
+            mi = r.get("meta_input")
+            mo = r.get("meta_output")
             try:
                 inp = json.loads(mi) if isinstance(mi, str) else mi
             except Exception:
                 inp = mi
-        else:
-            inp = None
-        if pos_from_end <= lo:
             try:
                 outp = json.loads(mo) if isinstance(mo, str) else mo
             except Exception:
                 outp = mo
-        else:
-            outp = None
+            rebuilt.append(
+                {
+                    "session_id": sid,
+                    "count": int(r.get("count") or 0),
+                    "input": inp,
+                    "output": outp,
+                    "zip": str(r.get("zip") or ""),
+                    "zip_status": str(r.get("zip_status") or "pending"),
+                    "created_at": str(r.get("created_at") or ""),
+                }
+            )
+        if rebuilt:
+            chat_history_overwrite(record_id=int(record_id), items=rebuilt, ttl=3600, limit=50)
+        items = rebuilt
+
+    # 阶段4：从末尾倒数应用 limit_input/limit_output；未包含的置为 None
+    n = len(items)
+    out: List[Dict[str, Any]] = []
+    for idx, r in enumerate(items):
+        pos_from_end = n - idx
+        z = str(r.get("zip") or "")
+        inp = r.get("input") if pos_from_end <= li else None
+        outp = r.get("output") if pos_from_end <= lo else None
         out.append({"input": inp, "output": outp, "zip": z})
     # 阶段7：记录数量并返回结构化结果
     logger.debug(f"完成 [check_session_for_rag] 历史纪录检查到的数量:{len(out)}")
@@ -481,7 +417,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
             his_items.append((inp or "", outp or "", z or ""))
     else :
         # 无历史记录的场景，后续依旧可进行检索（history 为空）
-        logger.debug(f"没有历史记录")
+        logger.debug("没有历史记录")
         his_items=[]
         history=[]
     
@@ -489,13 +425,19 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
     # 阶段3：将历史条目格式化为拼接字符串，作为提示词中的 <history> 参考
     his_parts: List[str] = []
     for i, (inp, outp, z) in enumerate(his_items, start=1):
-        his_parts.append(f"第{i}轮: human:{inp}, llm:{outp}, zip:{z}")
+        inp_s = str(inp or "").strip()
+        out_s = str(outp or "").strip()
+        z_s = str(z or "").strip()
+        if inp_s != "" or out_s != "":
+            his_parts.append(f"第{i}轮: human:{inp_s}, llm:{out_s}")
+        elif z_s != "":
+            his_parts.append(f"第{i}轮: zip:{z_s}")
     his_joined = "; ".join(his_parts)
 
     # 没有历史记录时，创建新的记录
     if int(record_id) <= 0:
         # 阶段4：若无记录ID，基于本次 message 创建新记录以承载后续会话
-        logger.debug(f"创建新的记录")
+        logger.debug("创建新的记录")
         nm = str(message or "")
         created_row = repo.create_record(payload={"agent_id": int(agent_id), "name": nm, "meta": meta}, table_name=tables["record"])
         try:
@@ -543,16 +485,12 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                             )
                 # 阶段5.2：构造符合提示词规范的输入文本（历史仅用于指代消解，短句仅从当前问题抽取）
                 agent = get_rag_query_agent(llm_override)
-                combined_msg = (
-                    f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
-                    f"——分隔线——\n"
-                    f"当前问题（仅从此处抽取）：\n{str(message)}\n"
-                    f"输出要求：仅返回源自“当前问题”的短句"
-                )
-                rq_inp = RAGQueryInput(message=combined_msg, max_items=6)
+                rq_inp = RAGQueryInput(message=str(message), max_items=6)
+                payload = rq_inp.model_dump()
+                payload["history"] = str(his_joined or "")
                 logger.debug(f"进入 agent 整合 messages")
-                # 阶段5.3：调用查询代理，期望返回 JSON 数组形式的检索短句
-                resp: Any = agent.invoke(rq_inp.model_dump())
+                # 阶段5.3：调用查询代理，期望返回结构化的检索短句
+                resp: Any = agent.invoke(payload)
 
                 logger.debug(f"继续 [agent_chat_get_rag] agent理解message完毕, 输出了: resp={resp}")
 
@@ -595,14 +533,8 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                         optimized_msgs = []
             except Exception:
                 # 阶段5.6：代理调用发生异常时的防御性回退（本地规则提取）
-                logger.error(f"错误 [agent_chat_get_rag] agent理解message失败, message={message}")
+                logger.exception(f"错误 [agent_chat_get_rag] agent理解message失败, message={message}")
                 try:
-                    combined_msg = (
-                        f"历史上下文（仅用于改写指代，不抽取短句）：\n{his_joined}\n"
-                        f"——分隔线——\n"
-                        f"当前问题（仅从此处抽取）：\n{str(message)}\n"
-                        f"输出要求：仅返回源自“当前问题”的短句"
-                    )
                     _q = RAGQueryInput(message=str(message), max_items=6)
                     _res = rag_build_queries(_q)
                     optimized_msgs = list(getattr(_res, "messages", []) or [])

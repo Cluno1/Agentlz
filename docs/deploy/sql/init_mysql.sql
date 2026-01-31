@@ -213,9 +213,14 @@ CREATE TABLE `session` (
   `meta_input` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '输入元数据',
   `meta_output` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '输出元数据',
   `zip` longtext NULL COMMENT '压缩后的会话数据',
+  `request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '请求幂等键',
+  `zip_status` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT 'zip状态',
+  `zip_updated_at` datetime NULL DEFAULT NULL COMMENT 'zip更新时间',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_session_record`(`record_id`) USING BTREE
+  UNIQUE INDEX `uk_session_request_id`(`request_id`) USING BTREE,
+  INDEX `idx_session_record`(`record_id`) USING BTREE,
+  INDEX `idx_session_record_count`(`record_id`, `count`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
 

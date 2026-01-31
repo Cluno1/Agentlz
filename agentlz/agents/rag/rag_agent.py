@@ -85,7 +85,7 @@ def get_rag_query_agent(llm_override: object = None) -> Runnable[RAGQueryInput, 
     llm = llm_override if llm_override is not None else get_model(settings=settings)
     prompt = ChatPromptTemplate.from_messages([
         ("system", RAG_QUERY_SYSTEM_PROMPT),
-        ("human", "历史记录（可选）：\n<history></history>\n当前问题：\n<current_query>{message}</current_query>"),
+        ("human", "历史记录（可选）：\n<history>{history}</history>\n当前问题：\n<current_query>{message}</current_query>"),
     ])
     if llm is None:
         return prompt
