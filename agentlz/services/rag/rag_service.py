@@ -345,15 +345,15 @@ def get_sessions_by_record_paginated(
         if isinstance(row_meta, dict) and isinstance(req_meta, dict):
             row_meta_cmp = {k: v for k, v in row_meta.items() if k != "request_id"}
             req_meta_cmp = {k: v for k, v in req_meta.items() if k != "request_id"}
-            meta_match = row_meta_cmp == req_meta_cmp
+            meta_match = all(row_meta_cmp.get(k) == v for k, v in req_meta_cmp.items())
     except Exception:
         meta_match = row_meta == req_meta
     if row.get("agent_id") != int(agent_id) or not meta_match:
         logger.error(
-            f"错误 [get_sessions_by_record_paginated] Record不属于该Agent agent_id={agent_id} "
+            f"错误 [get_sessions_by_record_paginated] Record归属或meta不匹配 agent_id={agent_id} "
             f"record_agent_id={row.get('agent_id')} meta_match={meta_match}"
         )
-        raise HTTPException(status_code=403, detail="Record不属于该Agent")
+        raise HTTPException(status_code=403, detail="Record不属于该Agent或meta不匹配")
     ses_table = tables["session"]
     logger.debug(f"继续 [get_sessions_by_record_paginated] 开始分页查询 record_id={record_id} page={page} per_page={per_page}")
     rows, total = sess_repo.list_sessions_by_record_paginated(
