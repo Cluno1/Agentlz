@@ -12,6 +12,7 @@ class DocumentItem(BaseModel):
     upload_time: Optional[str] = None
     title: str
     content: Optional[str] = None
+    strategy: Optional[list[int]] = None
 
 class DocumentQuery(BaseModel):
     status: Optional[str] = None

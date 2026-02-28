@@ -52,6 +52,41 @@ def _process_agent_meta(agent: Dict[str, Any]) -> Dict[str, Any]:
     return agent
 
 
+def _parse_documents_payload(payload: Dict[str, Any]) -> tuple[List[str], Dict[str, Any], set[str]]:
+    """从 agent 创建/更新入参中解析 documents。
+
+    约定：
+    - documents: [{id: str, strategy?: int[]}, ...]
+    - id 允许兼容 document_id（历史字段名）
+    - strategy 字段如果未提供，表示“不设置/不更新 strategy”
+
+    返回：
+    - doc_ids：按入参顺序去重后的文档 ID 列表
+    - strategy_by_doc：doc_id -> strategy 原始值（后续由仓储层归一化与序列化）
+    - strategy_provided：显式提供了 strategy 字段的 doc_id 集合
+    """
+    documents_raw = payload.get("documents")
+    if not isinstance(documents_raw, list):
+        return [], {}, set()
+    doc_ids: List[str] = []
+    seen: set[str] = set()
+    strategy_by_doc: Dict[str, Any] = {}
+    strategy_provided: set[str] = set()
+    for it in documents_raw:
+        if not isinstance(it, dict):
+            continue
+        did = str(it.get("id") or it.get("document_id") or "").strip()
+        if not did:
+            continue
+        if did not in seen:
+            seen.add(did)
+            doc_ids.append(did)
+        if "strategy" in it:
+            strategy_provided.add(did)
+            strategy_by_doc[did] = it.get("strategy")
+    return doc_ids, strategy_by_doc, strategy_provided
+
+
 def _tables() -> Dict[str, str]:
     s = get_settings()
     return {
@@ -93,6 +128,12 @@ def _check_agent_permission(agent: Dict[str, Any], current_user_id: int, tenant_
 
 
 def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """创建 Agent 并同步 MCP / 文档关联。
+
+    关键入参：
+    - mcp_agent_ids: MCP 代理 ID 列表
+    - documents: [{id: 文档ID, strategy?: int[]}, ...]
+    """
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
     s = get_settings()
@@ -116,7 +157,7 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
         table_name=agent_table,
     )
     mcp_ids = payload.get("mcp_agent_ids") or []
-    doc_ids = payload.get("document_ids") or []
+    doc_ids, strategy_by_doc, _strategy_provided = _parse_documents_payload(payload)
     if mcp_ids:
         seen: set[int] = set()
         for mid in mcp_ids:
@@ -130,14 +171,15 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             mcp_rel_repo.create_agent_mcp(payload={"agent_id": int(
                 row["id"]), "mcp_agent_id": mid_int}, table_name=_tables()["agent_mcp"])
     if doc_ids:
-        seen_d: set[str] = set()
         for did in doc_ids:
-            did_str = str(did)
-            if did_str in seen_d:
-                continue
-            seen_d.add(did_str)
-            doc_rel_repo.create_agent_document(payload={"agent_id": int(
-                row["id"]), "document_id": did_str}, table_name=_tables()["agent_document"])
+            doc_rel_repo.create_agent_document(
+                payload={
+                    "agent_id": int(row["id"]),
+                    "document_id": did,
+                    "strategy": strategy_by_doc.get(did),
+                },
+                table_name=_tables()["agent_document"],
+            )
     r = _process_agent_meta(row)
     r.pop("api_name", None)
     r.pop("api_key", None)
@@ -146,16 +188,20 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
     m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
     r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
     rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-    d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
     doc_items: List[Dict[str, Any]] = []
-    for did in d_ids:
+    for rel in rel_d:
+        did = str(rel.get("document_id") or "").strip()
+        if not did:
+            continue
         d = doc_repo.get_document_with_names_by_id_any_tenant(
             doc_id=did,
             table_name=_tables()["doc"],
             user_table_name=_tables()["user"],
             tenant_table_name=_tables()["tenant"],
         ) or {}
-        doc_items.append({"id": did, "name": str(d.get("title") or "")})
+        doc_items.append(
+            {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
+        )
     r["documents"] = doc_items
     return r
 
@@ -172,6 +218,11 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
     :param tenant_id: 租户ID
     :param claims: 认证信息
     :return: 更新后的智能体信息
+
+    文档关联更新规则（仅支持 documents 字段）：
+    - 未提供 documents：不修改文档关联与 strategy。
+    - 提供 documents（包含空列表）：将当前关联同步为该列表（增删关联）。
+    - documents 中显式提供 strategy 的项：更新对应关联的 strategy。
     """
     _ensure_authenticated(claims)
     uid = _current_user_id(claims)
@@ -215,8 +266,8 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         for mid in to_del:
             mcp_rel_repo.delete_agent_mcp_by_pair(
                 agent_id=agent_id, mcp_agent_id=mid, table_name=_tables()["agent_mcp"])
-    doc_ids = payload.get("document_ids")
-    if isinstance(doc_ids, list):
+    if "documents" in payload and isinstance(payload.get("documents"), list):
+        doc_ids, strategy_by_doc, strategy_provided = _parse_documents_payload(payload)
         current_d = doc_rel_repo.list_agent_documents(
             agent_id=agent_id, table_name=_tables()["agent_document"])
         current_doc_ids = {str(x.get("document_id")) for x in current_d}
@@ -225,7 +276,15 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         to_del_d = current_doc_ids - target_doc_ids
         for did in to_add_d:
             doc_rel_repo.create_agent_document(payload={
-                                               "agent_id": agent_id, "document_id": did}, table_name=_tables()["agent_document"])
+                                               "agent_id": agent_id, "document_id": did, "strategy": strategy_by_doc.get(did)}, table_name=_tables()["agent_document"])
+        for did in (target_doc_ids & current_doc_ids):
+            if did in strategy_provided:
+                doc_rel_repo.update_agent_document_strategy_by_pair(
+                    agent_id=agent_id,
+                    document_id=did,
+                    strategy=strategy_by_doc.get(did),
+                    table_name=_tables()["agent_document"],
+                )
         for did in to_del_d:
             doc_rel_repo.delete_agent_document_by_pair(
                 agent_id=agent_id, document_id=did, table_name=_tables()["agent_document"])
@@ -243,16 +302,20 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
         r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
         rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
         doc_items: List[Dict[str, Any]] = []
-        for did in d_ids:
+        for rel in rel_d:
+            did = str(rel.get("document_id") or "").strip()
+            if not did:
+                continue
             d = doc_repo.get_document_with_names_by_id_any_tenant(
                 doc_id=did,
                 table_name=_tables()["doc"],
                 user_table_name=_tables()["user"],
                 tenant_table_name=_tables()["tenant"],
             ) or {}
-            doc_items.append({"id": did, "name": str(d.get("title") or "")})
+            doc_items.append(
+                {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
+            )
         r["documents"] = doc_items
         return r
     return None
@@ -383,7 +446,24 @@ def list_agents_service(
         r["mcp_agents"] = [{"id": int(mcp_ids[i]), "name": mcp_names[i] if i < len(mcp_names) else ""} for i in range(len(mcp_ids))]
         doc_ids = [x for x in doc_ids_str.split(sep) if x] if doc_ids_str else []
         doc_titles = [x for x in doc_titles_str.split(sep) if x] if doc_titles_str else []
-        r["documents"] = [{"id": doc_ids[i], "name": doc_titles[i] if i < len(doc_titles) else ""} for i in range(len(doc_ids))]
+        strategy_by_doc: Dict[str, Any] = {}
+        if r.get("id") is not None:
+            rel_d = doc_rel_repo.list_agent_documents(
+                agent_id=int(r.get("id")), table_name=_tables()["agent_document"]
+            )
+            for rel in rel_d:
+                did = str(rel.get("document_id") or "").strip()
+                if not did:
+                    continue
+                strategy_by_doc[did] = rel.get("strategy")
+        r["documents"] = [
+            {
+                "id": doc_ids[i],
+                "name": doc_titles[i] if i < len(doc_titles) else "",
+                "strategy": strategy_by_doc.get(doc_ids[i]),
+            }
+            for i in range(len(doc_ids))
+        ]
         r.pop("mcp_ids", None)
         r.pop("mcp_names", None)
         r.pop("doc_ids", None)
@@ -451,13 +531,16 @@ def list_accessible_agents_service(
             x.get("name") or "")} for x in m_rows]
         rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()[
                                                   "agent_document"]) if r.get("id") is not None else []
-        d_ids = [str(x.get("document_id"))
-                     for x in rel_d if x.get("document_id")]
         doc_items: List[Dict[str, Any]] = []
-        for did in d_ids:
+        for rel in rel_d:
+            did = str(rel.get("document_id") or "").strip()
+            if not did:
+                continue
             d = doc_repo.get_document_with_names_by_id_any_tenant(doc_id=did, table_name=_tables(
             )["doc"], user_table_name=_tables()["user"], tenant_table_name=_tables()["tenant"]) or {}
-            doc_items.append({"id": did, "name": str(d.get("title") or "")})
+            doc_items.append(
+                {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
+            )
         r["documents"] = doc_items
         # 过滤掉 disabled 为 True 的智能体
         if not r.get("disabled") :
@@ -491,16 +574,20 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
     r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
     rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
-    d_ids = [str(x.get("document_id")) for x in rel_d if x.get("document_id")]
     doc_items: List[Dict[str, Any]] = []
-    for did in d_ids:
+    for rel in rel_d:
+        did = str(rel.get("document_id") or "").strip()
+        if not did:
+            continue
         d = doc_repo.get_document_with_names_by_id_any_tenant(
             doc_id=did,
             table_name=_tables()["doc"],
             user_table_name=_tables()["user"],
             tenant_table_name=_tables()["tenant"],
         ) or {}
-        doc_items.append({"id": did, "name": str(d.get("title") or "")})
+        doc_items.append(
+            {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
+        )
     r["documents"] = doc_items
     return r
 
@@ -1043,7 +1130,13 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
         if not locked:
             return _busy_reply(int(lock_record_id))
 
-    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta)
+    meta_for_record = meta
+    try:
+        if isinstance(meta, dict) and "request_id" in meta:
+            meta_for_record = {k: v for k, v in meta.items() if k != "request_id"}
+    except Exception:
+        meta_for_record = meta
+    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:

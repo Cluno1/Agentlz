@@ -195,6 +195,7 @@ CREATE TABLE `agent_document` (
   `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
   `document_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文档ID',
+  `strategy` json NULL COMMENT '策略标识（int数组）',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_agent_document` (`agent_id`, `document_id`) USING BTREE,

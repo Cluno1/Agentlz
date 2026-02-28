@@ -157,6 +157,76 @@ def list_chunk_embeddings(*, tenant_id: str, doc_id: Optional[str] = None, limit
                 ]
 
 
+def list_distinct_doc_strategies(*, tenant_id: str, doc_id: str) -> List[int]:
+    did = str(doc_id or "").strip()
+    if not did:
+        return []
+    with closing(get_pg_conn()) as conn:
+        with conn.cursor() as cur:
+            _set_tenant(cur, tenant_id)
+            cur.execute(
+                "SELECT strategy FROM chunk_embeddings WHERE doc_id=%s GROUP BY strategy",
+                (did,),
+            )
+            rows = cur.fetchall()
+    out: List[int] = []
+    seen: set[int] = set()
+    for (s,) in rows or []:
+        try:
+            v = int(s)
+        except Exception:
+            continue
+        if v < 0 or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    out.sort()
+    return out
+
+
+def list_distinct_doc_strategies_by_doc_ids(
+    *, tenant_id: str, doc_ids: Sequence[str]
+) -> Dict[str, List[int]]:
+    ids = [str(x or "").strip() for x in (doc_ids or [])]
+    ids = [x for x in ids if x]
+    if not ids:
+        return {}
+    with closing(get_pg_conn()) as conn:
+        with conn.cursor() as cur:
+            _set_tenant(cur, tenant_id)
+            cur.execute(
+                "SELECT doc_id, strategy FROM chunk_embeddings WHERE doc_id = ANY(%s) GROUP BY doc_id, strategy",
+                (ids,),
+            )
+            rows = cur.fetchall()
+    grouped: Dict[str, List[int]] = {}
+    seen: Dict[str, set[int]] = {}
+    for r in rows or []:
+        did = str(r[0] or "").strip()
+        if not did:
+            continue
+        try:
+            v = int(r[1])
+        except Exception:
+            continue
+        if v < 0:
+            continue
+        s = seen.get(did)
+        if s is None:
+            s = set()
+            seen[did] = s
+        if v in s:
+            continue
+        s.add(v)
+        grouped.setdefault(did, []).append(v)
+    for did, arr in grouped.items():
+        try:
+            arr.sort()
+        except Exception:
+            pass
+    return grouped
+
+
 def update_chunk_embedding(*, tenant_id: str, chunk_id: str, embedding: Optional[Sequence[float]] = None, content: Optional[str] = None) -> Optional[Dict[str, Any]]:
     sets: List[str] = []
     params: List[Any] = []

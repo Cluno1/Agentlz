@@ -109,9 +109,18 @@ def get_list_records_by_name_and_agent_id(
     page: int = 1,
     per_page: int = 10,
     keyword: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     tables = _tables()
     table = tables["record"]
+    meta_keyword: Optional[str] = None
+    try:
+        if isinstance(meta, dict):
+            uid = str(meta.get("user_id") or "").strip()
+            if uid != "":
+                meta_keyword = f"\"user_id\": \"{uid}\""
+    except Exception:
+        meta_keyword = None
     rows, total = repo.list_records_by_agent(
         agent_id=int(agent_id),
         page=max(1, int(page)),
@@ -119,6 +128,7 @@ def get_list_records_by_name_and_agent_id(
         sort="createdAt",
         order="DESC",
         q=keyword,
+        meta_keyword=meta_keyword,
         table_name=table,
     )
     return {"rows": rows, "total": int(total)}
@@ -324,8 +334,25 @@ def get_sessions_by_record_paginated(
     if not row:
         logger.error(f"错误 [get_sessions_by_record_paginated] Record ID 错误 record_id={record_id}")
         raise HTTPException(status_code=403, detail="Record ID 错误")
-    elif row.get("agent_id") != int(agent_id) or row.get("meta") != meta:
-        logger.error(f"错误 [get_sessions_by_record_paginated] Record不属于该Agent agent_id={agent_id} record_agent_id={row.get('agent_id')} meta_match={row.get('meta') == meta}")
+    row_meta = row.get("meta")
+    req_meta = meta
+    if row_meta is None:
+        row_meta = {}
+    if req_meta is None:
+        req_meta = {}
+    meta_match = row_meta == req_meta
+    try:
+        if isinstance(row_meta, dict) and isinstance(req_meta, dict):
+            row_meta_cmp = {k: v for k, v in row_meta.items() if k != "request_id"}
+            req_meta_cmp = {k: v for k, v in req_meta.items() if k != "request_id"}
+            meta_match = row_meta_cmp == req_meta_cmp
+    except Exception:
+        meta_match = row_meta == req_meta
+    if row.get("agent_id") != int(agent_id) or not meta_match:
+        logger.error(
+            f"错误 [get_sessions_by_record_paginated] Record不属于该Agent agent_id={agent_id} "
+            f"record_agent_id={row.get('agent_id')} meta_match={meta_match}"
+        )
         raise HTTPException(status_code=403, detail="Record不属于该Agent")
     ses_table = tables["session"]
     logger.debug(f"继续 [get_sessions_by_record_paginated] 开始分页查询 record_id={record_id} page={page} per_page={per_page}")

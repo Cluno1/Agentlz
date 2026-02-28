@@ -17,16 +17,59 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone, timedelta
+import json
 from sqlalchemy import text
 
 from agentlz.core.database import get_mysql_engine
+
+
+def _normalize_strategy(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        out: List[int] = []
+        seen: set[int] = set()
+        for x in value:
+            try:
+                v = int(x)
+            except Exception:
+                continue
+            if v < 0 or v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+    if isinstance(value, str):
+        s = value.strip()
+        if s == "":
+            return None
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return None
+        return _normalize_strategy(parsed)
+    try:
+        v = int(value)
+    except Exception:
+        return None
+    return [v] if v >= 0 else None
+
+
+def _dump_strategy(value: Any) -> Optional[str]:
+    normalized = _normalize_strategy(value)
+    if normalized is None:
+        return None
+    try:
+        return json.dumps(normalized, ensure_ascii=False)
+    except Exception:
+        return None
 
 
 def list_agent_documents(*, agent_id: int, table_name: str) -> List[Dict[str, Any]]:
     """按 agent 列出文档关联列表。"""
     sql = text(
         f"""
-        SELECT id, agent_id, document_id, created_at
+        SELECT id, agent_id, document_id, strategy, created_at
         FROM `{table_name}` WHERE agent_id = :agent_id
         ORDER BY id DESC -- 按主键倒序，最近关联在前
         """
@@ -35,7 +78,12 @@ def list_agent_documents(*, agent_id: int, table_name: str) -> List[Dict[str, An
     with engine.connect() as conn:
         # 参数化查询，避免注入
         rows = conn.execute(sql, {"agent_id": agent_id}).mappings().all()
-    return [dict(r) for r in rows]
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["strategy"] = _normalize_strategy(d.get("strategy"))
+        out.append(d)
+    return out
 
 
 def get_agent_document_by_id(*, rel_id: int, table_name: str) -> Optional[Dict[str, Any]]:
@@ -43,14 +91,18 @@ def get_agent_document_by_id(*, rel_id: int, table_name: str) -> Optional[Dict[s
     # 精确匹配主键
     sql = text(
         f"""
-        SELECT id, agent_id, document_id, created_at
+        SELECT id, agent_id, document_id, strategy, created_at
         FROM `{table_name}` WHERE id = :id
         """
     )
     engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"id": rel_id}).mappings().first()
-    return dict(row) if row else None
+    if not row:
+        return None
+    d = dict(row)
+    d["strategy"] = _normalize_strategy(d.get("strategy"))
+    return d
 
 
 def get_agent_document_by_pair(*, agent_id: int, document_id: str, table_name: str) -> Optional[Dict[str, Any]]:
@@ -58,14 +110,18 @@ def get_agent_document_by_pair(*, agent_id: int, document_id: str, table_name: s
     # 使用唯一键对进行查询
     sql = text(
         f"""
-        SELECT id, agent_id, document_id, created_at
+        SELECT id, agent_id, document_id, strategy, created_at
         FROM `{table_name}` WHERE agent_id = :agent_id AND document_id = :document_id
         """
     )
     engine = get_mysql_engine()
     with engine.connect() as conn:
         row = conn.execute(sql, {"agent_id": agent_id, "document_id": document_id}).mappings().first()
-    return dict(row) if row else None
+    if not row:
+        return None
+    d = dict(row)
+    d["strategy"] = _normalize_strategy(d.get("strategy"))
+    return d
 
 
 def create_agent_document(
@@ -78,14 +134,15 @@ def create_agent_document(
     sql = text(
         f"""
         INSERT INTO `{table_name}`
-        (agent_id, document_id, created_at)
-        VALUES (:agent_id, :document_id, :created_at)
+        (agent_id, document_id, strategy, created_at)
+        VALUES (:agent_id, :document_id, :strategy, :created_at)
         """
     )
     # 参数化插入
     params = {
         "agent_id": payload.get("agent_id"),
         "document_id": payload.get("document_id"),
+        "strategy": _dump_strategy(payload.get("strategy")),
         "created_at": now,
     }
     engine = get_mysql_engine()
@@ -95,11 +152,34 @@ def create_agent_document(
         new_id = result.lastrowid
         ret = conn.execute(
             text(
-                f"SELECT id, agent_id, document_id, created_at FROM `{table_name}` WHERE id = :id"
+                f"SELECT id, agent_id, document_id, strategy, created_at FROM `{table_name}` WHERE id = :id"
             ),
             {"id": new_id},
         ).mappings().first()
-        return dict(ret)
+        d = dict(ret)
+        d["strategy"] = _normalize_strategy(d.get("strategy"))
+        return d
+
+
+def update_agent_document_strategy_by_pair(*, agent_id: int, document_id: str, strategy: Any, table_name: str) -> bool:
+    sql = text(
+        f"""
+        UPDATE `{table_name}`
+        SET strategy = :strategy
+        WHERE agent_id = :agent_id AND document_id = :document_id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            sql,
+            {
+                "agent_id": int(agent_id),
+                "document_id": str(document_id),
+                "strategy": _dump_strategy(strategy),
+            },
+        )
+        return result.rowcount > 0
 
 
 def delete_agent_document(*, rel_id: int, table_name: str) -> bool:

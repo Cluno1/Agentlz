@@ -8,6 +8,7 @@ from agentlz.repositories import document_repository as repo
 from agentlz.repositories import user_repository as user_repo
 from agentlz.repositories import user_doc_perm_repository as perm_repo
 from agentlz.repositories import agent_document_repository as agdoc_repo
+from agentlz.repositories import chunk_embeddings_repository as emb_repo
 from agentlz.schemas.document import DocumentUpload
 
 from agentlz.services.rag.chunk_embeddings_service import (
@@ -356,6 +357,10 @@ def get_document_service(
 
     if row.get("upload_time") is not None:
         row["upload_time"] = str(row["upload_time"])
+    doc_tenant_id = str(row.get("tenant_id") or tenant_id)
+    row["strategy"] = emb_repo.list_distinct_doc_strategies(
+        tenant_id=doc_tenant_id, doc_id=doc_id
+    )
     return row
 
 
@@ -672,6 +677,27 @@ def list_documents_service(
     for r in rows:
         if r.get("upload_time") is not None:
             r["upload_time"] = str(r["upload_time"])
+    tenant_to_doc_ids: Dict[str, List[str]] = {}
+    for r in rows:
+        did = str(r.get("id") or "").strip()
+        tid = str(r.get("tenant_id") or tenant_id).strip()
+        if not did or not tid:
+            continue
+        tenant_to_doc_ids.setdefault(tid, []).append(did)
+    tenant_to_strategy_map: Dict[str, Dict[str, List[int]]] = {}
+    for tid, doc_ids in tenant_to_doc_ids.items():
+        try:
+            tenant_to_strategy_map[tid] = (
+                emb_repo.list_distinct_doc_strategies_by_doc_ids(
+                    tenant_id=tid, doc_ids=doc_ids
+                )
+            )
+        except Exception:
+            tenant_to_strategy_map[tid] = {}
+    for r in rows:
+        did = str(r.get("id") or "").strip()
+        tid = str(r.get("tenant_id") or tenant_id).strip()
+        r["strategy"] = tenant_to_strategy_map.get(tid, {}).get(did, [])
     return rows, total
 
 

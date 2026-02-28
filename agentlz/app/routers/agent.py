@@ -383,6 +383,7 @@ def chat_agent_history(payload: AgentChatHistoryInput, request: Request):
         page=payload.page,
         per_page=payload.per_page,
         keyword=payload.keyword,
+        meta=payload.meta,
     )
     return Result.ok(res)
 

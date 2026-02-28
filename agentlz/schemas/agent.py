@@ -3,6 +3,11 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
+class AgentDocumentBinding(BaseModel):
+    id: str
+    strategy: Optional[List[int]] = None
+
+
 class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
@@ -10,7 +15,7 @@ class AgentCreate(BaseModel):
     system_prompt: Optional[str] = None
     meta: Optional[dict] = None
     mcp_agent_ids: Optional[List[int]] = None
-    document_ids: Optional[List[str]] = None
+    documents: Optional[List[AgentDocumentBinding]] = None
 
 
 class AgentUpdate(BaseModel):
@@ -20,7 +25,7 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     meta: Optional[dict] = None
     mcp_agent_ids: Optional[List[int]] = None
-    document_ids: Optional[List[str]] = None
+    documents: Optional[List[AgentDocumentBinding]] = None
 
 
 class AgentApiUpdate(BaseModel):

@@ -224,6 +224,7 @@ def list_records_by_agent(
     sort: str,
     order: str,
     q: Optional[str],
+    meta_keyword: Optional[str] = None,
     table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """分页查询某 Agent 下的 Record 列表
@@ -248,6 +249,9 @@ def list_records_by_agent(
     if q:
         where.append("name LIKE :q")
         params["q"] = f"%{q}%"
+    if meta_keyword:
+        where.append("meta LIKE :meta_q")
+        params["meta_q"] = f"%{meta_keyword}%"
     where_sql = "WHERE " + " AND ".join(where)
 
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
