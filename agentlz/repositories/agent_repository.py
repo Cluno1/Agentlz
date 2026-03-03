@@ -270,6 +270,7 @@ def list_accessible_agents_by_user(
     base_where = (
         "("  # 括起整体 OR 条件
         "created_by_id = :uid "
+        "OR tenant_id = 'system' "
         "OR (:role_admin = 1 AND tenant_id = :user_tid AND tenant_id <> 'default') "
         f"OR id IN (SELECT agent_id FROM `{user_agent_perm_table_name}` WHERE user_id = :uid AND perm IN ('admin','write'))"
         ")"

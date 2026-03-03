@@ -29,7 +29,7 @@ def list_users(
     sort: str,
     order: str,
     q: Optional[str],
-    tenant_id: str,
+    tenant_id: Optional[str],
     table_name: str,
 ) -> Tuple[List[Dict[str, Any]], int]:
     # 分页查询用户列表
@@ -39,12 +39,15 @@ def list_users(
     sort_col = _sanitize_sort(sort)
     offset = (page - 1) * per_page
 
-    where = ["tenant_id = :tenant_id"]
-    params: Dict[str, Any] = {"tenant_id": tenant_id}
+    where: List[str] = []
+    params: Dict[str, Any] = {}
+    if tenant_id:
+        where.append("tenant_id = :tenant_id")
+        params["tenant_id"] = tenant_id
     if q:
         where.append("(username LIKE :q OR email LIKE :q OR full_name LIKE :q)")
         params["q"] = f"%{q}%"
-    where_sql = "WHERE " + " AND ".join(where)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{table_name}` {where_sql}")
     list_sql = text(
@@ -62,6 +65,19 @@ def list_users(
         total = conn.execute(count_sql, params).scalar() or 0
         rows = conn.execute(list_sql, {**params, "limit": per_page, "offset": offset}).mappings().all()
     return [dict(r) for r in rows], int(total)
+
+
+def get_user_by_id_any_tenant(*, user_id: int, table_name: str) -> Optional[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT id, username, email, full_name, avatar, role, disabled, created_at, created_by_id, tenant_id
+        FROM `{table_name}` WHERE id = :id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"id": user_id}).mappings().first()
+    return dict(row) if row else None
 
 
 def get_user_by_id(*, user_id: int, tenant_id: str, table_name: str) -> Optional[Dict[str, Any]]:
@@ -185,6 +201,7 @@ def update_user(
         "role",
         "disabled",
         "created_by_id",
+        "tenant_id",
     ]
 
     sets = []

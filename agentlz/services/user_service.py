@@ -20,7 +20,7 @@ def _get_table_and_header() -> Tuple[str, str]:
 
 
 def list_users_service(
-    *, page: int, per_page: int, sort: str, order: str, q: Optional[str], tenant_id: str
+    *, page: int, per_page: int, sort: str, order: str, q: Optional[str], tenant_id: Optional[str]
 ):
     table_name, _ = _get_table_and_header()
     rows, total = repo.list_users(
@@ -42,6 +42,14 @@ def list_users_service(
 def get_user_service(*, user_id: int, tenant_id: str) -> Optional[Dict[str, Any]]:
     table_name, _ = _get_table_and_header()
     row = repo.get_user_by_id(user_id=user_id, tenant_id=tenant_id, table_name=table_name)
+    if row and row.get("created_at") is not None:
+        row["created_at"] = str(row["created_at"])
+    return row
+
+
+def get_user_any_service(*, user_id: int) -> Optional[Dict[str, Any]]:
+    table_name, _ = _get_table_and_header()
+    row = repo.get_user_by_id_any_tenant(user_id=user_id, table_name=table_name)
     if row and row.get("created_at") is not None:
         row["created_at"] = str(row["created_at"])
     return row
@@ -90,6 +98,8 @@ def update_user_service(*, user_id: int, payload: UserUpdate, tenant_id: str) ->
         data["disabled"] = int(bool(payload.disabled))
     if payload.created_by_id is not None:
         data["created_by_id"] = payload.created_by_id
+    if payload.tenant_id is not None:
+        data["tenant_id"] = payload.tenant_id
 
     row = repo.update_user(user_id=user_id, payload=data, tenant_id=tenant_id, table_name=table_name)
     if row and row.get("created_at") is not None:

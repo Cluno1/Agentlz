@@ -18,6 +18,24 @@ from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_
 router = APIRouter(prefix="/v1", tags=["users"])
 
 
+def _current_user_from_claims(claims: Dict[str, Any], tenant_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        uid = int(str(claims.get("sub")))
+    except Exception:
+        return None
+    return user_service.get_user_service(user_id=uid, tenant_id=tenant_id)
+
+
+def _is_super_admin(claims: Dict[str, Any], tenant_id: str) -> bool:
+    user = _current_user_from_claims(claims, tenant_id)
+    if not user:
+        return False
+    return (
+        str(user.get("role") or "") == "admin"
+        and str(user.get("tenant_id") or "") in {"system", "default"}
+    )
+
+
 @router.get("/users", response_model=Result)
 def list_users(
     request: Request,
@@ -31,9 +49,14 @@ def list_users(
     # 仅管理员可访问列表；claims 由 require_auth 注入，包含当前登录用户信息（sub 等）。
     tenant_id = require_tenant_id(request)
     require_admin(claims, tenant_id)
-    rows, total = user_service.list_users_service(
-        page=page, per_page=perPage, sort=sort, order=order, q=q, tenant_id=tenant_id
-    )
+    if _is_super_admin(claims, tenant_id):
+        rows, total = user_service.list_users_service(
+            page=page, per_page=perPage, sort=sort, order=order, q=q, tenant_id=None
+        )
+    else:
+        rows, total = user_service.list_users_service(
+            page=page, per_page=perPage, sort=sort, order=order, q=q, tenant_id=tenant_id
+        )
     data_items = [UserItem(**r) for r in rows]
     # 统一返回结构：Result，真实数据置于 data 字段
     return Result.ok({"data": data_items, "total": total})
@@ -44,7 +67,10 @@ def get_user(user_id: int, request: Request, claims: Dict[str, Any] = Depends(re
     # 管理员或本人（JWT sub == user_id）可访问详情
     tenant_id = require_tenant_id(request)
     require_admin_or_self(user_id, claims, tenant_id)
-    row = user_service.get_user_service(user_id=user_id, tenant_id=tenant_id)
+    if _is_super_admin(claims, tenant_id):
+        row = user_service.get_user_any_service(user_id=user_id)
+    else:
+        row = user_service.get_user_service(user_id=user_id, tenant_id=tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
     return Result.ok(row)
@@ -55,7 +81,10 @@ def create_user(payload: UserCreate, request: Request, claims: Dict[str, Any] = 
     # 仅管理员可创建用户
     tenant_id = require_tenant_id(request)
     require_admin(claims, tenant_id)
-    row = user_service.create_user_service(payload=payload, tenant_id=tenant_id)
+    target_tenant_id = tenant_id
+    if _is_super_admin(claims, tenant_id) and payload.tenant_id:
+        target_tenant_id = payload.tenant_id
+    row = user_service.create_user_service(payload=payload, tenant_id=target_tenant_id)
     return Result.ok(row)
 
 
@@ -79,7 +108,17 @@ def update_user(user_id: int, payload: UserUpdate, request: Request, claims: Dic
             if str(stored) != provided:
                 raise HTTPException(status_code=400, detail="当前密码错误")
         payload.password = payload.new_password
-    row = user_service.update_user_service(user_id=user_id, payload=payload, tenant_id=tenant_id)
+    if payload.tenant_id is not None and not _is_super_admin(claims, tenant_id):
+        raise HTTPException(status_code=403, detail="无权限修改租户归属")
+    if _is_super_admin(claims, tenant_id) and not is_self:
+        target = user_service.get_user_any_service(user_id=user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        row = user_service.update_user_service(
+            user_id=user_id, payload=payload, tenant_id=str(target.get("tenant_id") or "")
+        )
+    else:
+        row = user_service.update_user_service(user_id=user_id, payload=payload, tenant_id=tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
     return Result.ok(row)
@@ -90,7 +129,15 @@ def delete_user(user_id: int, request: Request, claims: Dict[str, Any] = Depends
     # 仅管理员可删除用户
     tenant_id = require_tenant_id(request)
     require_admin(claims, tenant_id)
-    ok = user_service.delete_user_service(user_id=user_id, tenant_id=tenant_id)
+    if _is_super_admin(claims, tenant_id):
+        target = user_service.get_user_any_service(user_id=user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        ok = user_service.delete_user_service(
+            user_id=user_id, tenant_id=str(target.get("tenant_id") or "")
+        )
+    else:
+        ok = user_service.delete_user_service(user_id=user_id, tenant_id=tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="用户不存在")
     return Result.ok({})

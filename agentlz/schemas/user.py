@@ -31,6 +31,7 @@ class UserCreate(BaseModel):
     role: Optional[str] = "user"
     disabled: Optional[bool] = False
     created_by_id: Optional[int] = None
+    tenant_id: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
@@ -46,6 +47,7 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     disabled: Optional[bool] = None
     created_by_id: Optional[int] = None
+    tenant_id: Optional[str] = None
 
 
 class ListResponse(BaseModel):

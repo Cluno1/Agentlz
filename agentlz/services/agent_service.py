@@ -40,6 +40,14 @@ def _current_user_id(claims: Optional[Dict[str, Any]]) -> int:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
 
 
+def _is_system_admin(user: Optional[Dict[str, Any]]) -> bool:
+    if not user:
+        return False
+    role = str(user.get("role") or "")
+    tid = str(user.get("tenant_id") or "")
+    return role == "admin" and tid in {"system", "default"}
+
+
 def _process_agent_meta(agent: Dict[str, Any]) -> Dict[str, Any]:
     """处理agent的meta字段反序列化"""
     if "meta" in agent and agent["meta"] is not None:
@@ -140,7 +148,15 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
     user_table = getattr(s, "user_table_name", "users")
     user_info = user_repo.get_user_by_id(
         user_id=uid, tenant_id=tenant_id, table_name=user_table)
-    agent_tenant_id = str((user_info or {}).get("tenant_id") or "default")
+    if tenant_id == "system":
+        if not user_info:
+            user_info = user_repo.get_user_by_id_any_tenant(
+                user_id=uid, table_name=user_table)
+        if not _is_system_admin(user_info):
+            raise HTTPException(status_code=403, detail="仅 system 管理员可创建系统智能体")
+        agent_tenant_id = "system"
+    else:
+        agent_tenant_id = str((user_info or {}).get("tenant_id") or "default")
     agent_table = _tables()["agent"]
     row = repo.create_agent(
         payload={
@@ -231,8 +247,9 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         agent_id=agent_id, table_name=agent_table)
     if not row:
         return None
-    if not _check_agent_permission(row, uid, tenant_id):
-        raise HTTPException(status_code=403, detail="没有权限")
+    if str(row.get("tenant_id") or "") != "system":
+        if not _check_agent_permission(row, uid, tenant_id):
+            raise HTTPException(status_code=403, detail="没有权限")
     update_payload: Dict[str, Any] = {}
     if "name" in payload:
         update_payload["name"] = payload.get("name")
@@ -429,8 +446,22 @@ def list_agents_service(
             agent_doc_table_name=_tables()["agent_document"],
             doc_table_name=_tables()["doc"],
         )
+    elif type == "system":
+        rows, total = repo.list_agents_agg(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            q=q,
+            tenant_id="system",
+            agent_table_name=_tables()["agent"],
+            mcp_rel_table_name=_tables()["agent_mcp"],
+            mcp_table_name=getattr(s, "mcp_agents_table_name", "mcp_agents"),
+            agent_doc_table_name=_tables()["agent_document"],
+            doc_table_name=_tables()["doc"],
+        )
     else:
-        raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant'")
+        raise HTTPException(status_code=400, detail="type 必须是 'self' 或 'tenant' 或 'system'")
     for r in rows:
         r.pop("api_name", None)
         r.pop("api_key", None)

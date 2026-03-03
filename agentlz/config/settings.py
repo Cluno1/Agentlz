@@ -130,6 +130,8 @@ class Settings(BaseSettings):
         default="file_fingerprint", env="FILE_FINGERPRINT_TABLE_NAME")
     # 模型表
     model_table_name: str = Field(default="model", env="MODEL_TABLE_NAME")
+    # 公告表
+    announcement_table_name: str = Field(default="announcement", env="ANNOUNCEMENT_TABLE_NAME")
 
 
 

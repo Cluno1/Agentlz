@@ -26,7 +26,7 @@ def list_agents(
     sort: str = Query("id"),
     order: str = Query("DESC", regex="^(ASC|DESC)$"),
     q: Optional[str] = Query(None),
-    type: str = Query("self", regex="^(self|tenant)$"),
+    type: str = Query("self", regex="^(self|tenant|system)$"),
 ):
     """分页查询智能体列表。
 
@@ -119,7 +119,7 @@ def create_agent(
     payload: AgentCreate,
     request: Request,
     claims: Dict[str, Any] = Depends(require_auth),
-    type: str = Query("self", regex="^(self|tenant)$"),
+    type: str = Query("self", regex="^(self|tenant|system)$"),
 ):
     """创建智能体。
 
@@ -132,7 +132,12 @@ def create_agent(
     返回：`Result(row)`，包含新建的智能体信息。
     """
     user_id = claims.get("sub") if isinstance(claims, dict) else None
-    tenant_id = "default" if type == "self" else require_tenant_id(request)
+    if type == "self":
+        tenant_id = "default"
+    elif type == "system":
+        tenant_id = "system"
+    else:
+        tenant_id = require_tenant_id(request)
     payload_data = payload.model_dump(exclude_none=True)
     logger.info(
         f"request {request.method} {request.url.path} type={type} tenant_id={tenant_id} user_id={user_id} payload={payload_data}"

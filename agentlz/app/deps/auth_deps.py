@@ -111,6 +111,11 @@ def require_admin(claims: Dict[str, Any], tenant_id: str) -> None:
     current = _get_current_user(claims, tenant_id)
     if not current or (current.get("role") != "admin"):
         raise HTTPException(status_code=403, detail="无权限：需要管理员角色")
+    current_tenant = str(current.get("tenant_id") or "")
+    if current_tenant in {"system", "default"}:
+        return
+    if current_tenant != str(tenant_id):
+        raise HTTPException(status_code=403, detail="无权限：仅可管理本租户")
 
 
 def require_admin_or_self(target_user_id: int, claims: Dict[str, Any], tenant_id: str) -> None:
@@ -129,3 +134,8 @@ def require_admin_or_self(target_user_id: int, claims: Dict[str, Any], tenant_id
     current = _get_current_user(claims, tenant_id)
     if not current or (current.get("role") != "admin"):
         raise HTTPException(status_code=403, detail="无权限：仅管理员或本人可操作")
+    current_tenant = str(current.get("tenant_id") or "")
+    if current_tenant in {"system", "default"}:
+        return
+    if current_tenant != str(tenant_id):
+        raise HTTPException(status_code=403, detail="无权限：仅可管理本租户")
