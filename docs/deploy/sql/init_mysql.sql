@@ -172,6 +172,9 @@ CREATE TABLE `record` (
   `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '记录名称',
   `meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '扩展元数据（JSON等）',
+  `summary_zip` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '历史总摘要',
+  `summary_until_session_id` bigint(20) UNSIGNED NOT NULL DEFAULT 0 COMMENT '总摘要覆盖到的session_id',
+  `summary_version` int(11) NOT NULL DEFAULT 1 COMMENT '总摘要版本',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_record_agent`(`agent_id`) USING BTREE, -- 通过Agent过滤加速

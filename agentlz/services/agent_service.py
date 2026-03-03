@@ -738,6 +738,43 @@ def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: s
     logger.debug(f"完成 [persist_chat_to_cache_and_mq] key={key}")
 
 
+def _maybe_publish_record_aggregate(*, agent_id: int, record_id: int, threshold: int = 5) -> None:
+    """
+    当某条记录新增会话达到阈值时，发布 record 级总压缩任务。
+
+    逻辑说明：
+    - 读取 record 的 summary_until_session_id，作为“已归档到哪一条”的游标；
+    - 读取该 record 最新的 session_id；
+    - 若最新 session_id 与游标差值达到阈值，则投递 MQ 消息；
+    - MQ 消息会由异步 worker 进行总摘要生成与落库。
+
+    设计目标：
+    - 非阻塞：不在请求线程做总压缩；
+    - 幂等：允许重复投递，worker 侧通过版本/锁兜底；
+    - 容错：任何异常吞掉，避免影响主链路。
+    """
+    try:
+        s = get_settings()
+        rec_table = getattr(s, "record_table_name", "record")
+        sess_table = getattr(s, "session_table_name", "session")
+        rec_row = record_repo.get_record_by_id(record_id=int(record_id), table_name=rec_table)
+        summary_until = 0
+        if rec_row:
+            try:
+                summary_until = int(rec_row.get("summary_until_session_id") or 0)
+            except Exception:
+                summary_until = 0
+        last_sid = sess_repo.get_last_session_id(record_id=int(record_id), table_name=sess_table)
+        if last_sid > 0 and (int(last_sid) - int(summary_until)) >= int(threshold):
+            publish_to_rabbitmq(
+                "zip_record_aggregate_tasks",
+                {"record_id": int(record_id), "agent_id": int(agent_id), "target_until_session_id": int(last_sid)},
+                durable=True,
+            )
+    except Exception:
+        pass
+
+
 def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     """
     LLM 简单回答流式生成器（Answer 版）
@@ -845,6 +882,7 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                             {"session_id": sid, "record_id": int(record_id), "agent_id": int(agent_id), "request_id": str(request_id)},
                             durable=True,
                         )
+                        _maybe_publish_record_aggregate(agent_id=int(agent_id), record_id=int(record_id))
                     else:
                         chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
             except Exception:
@@ -927,6 +965,7 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                         {"session_id": sid, "record_id": int(record_id), "agent_id": int(agent_id), "request_id": str(request_id)},
                         durable=True,
                     )
+                    _maybe_publish_record_aggregate(agent_id=int(agent_id), record_id=int(record_id))
                 else:
                     chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
         except Exception:

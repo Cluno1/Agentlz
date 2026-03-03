@@ -90,6 +90,11 @@ def _chat_lock_key(record_id: int) -> str:
     return f"chat:lock:record:{int(record_id)}"
 
 
+def _record_zip_lock_key(record_id: int) -> str:
+    """生成 record 级总压缩任务的 Redis 锁 key。"""
+    return f"chat:record_zip_lock:{int(record_id)}"
+
+
 def acquire_chat_lock(*, record_id: int, token: str, ttl_ms: int = 30000) -> bool:
     """获取对 record_id 的互斥锁（用于串行化同一记录的并发请求）。
 
@@ -120,6 +125,31 @@ def release_chat_lock(*, record_id: int, token: str) -> bool:
     try:
         rc = get_redis_client()
         return bool(rc.eval(lua, 1, _chat_lock_key(int(record_id)), str(token)))
+    except Exception:
+        return False
+
+
+def acquire_record_zip_lock(*, record_id: int, token: str, ttl_ms: int = 30000) -> bool:
+    """获取 record 级总压缩互斥锁，防止并发聚合任务互相覆盖。"""
+    try:
+        rc = get_redis_client()
+        return bool(rc.set(_record_zip_lock_key(int(record_id)), str(token), nx=True, px=int(ttl_ms)))
+    except Exception:
+        return False
+
+
+def release_record_zip_lock(*, record_id: int, token: str) -> bool:
+    """释放 record 级总压缩互斥锁（仅 token 匹配时删除）。"""
+    lua = """
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+        return redis.call('DEL', KEYS[1])
+    else
+        return 0
+    end
+    """
+    try:
+        rc = get_redis_client()
+        return bool(rc.eval(lua, 1, _record_zip_lock_key(int(record_id)), str(token)))
     except Exception:
         return False
 

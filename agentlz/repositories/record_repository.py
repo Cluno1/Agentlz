@@ -94,7 +94,7 @@ def create_record(*, payload: Dict[str, Any], table_name: str) -> Dict[str, Any]
         # 插入后立即回读完整记录，便于调用方直接使用
         ret = conn.execute(
             text(
-                f"SELECT id, agent_id, name, meta, created_at FROM `{table_name}` WHERE id = :id"
+                f"SELECT id, agent_id, name, meta, summary_zip, summary_until_session_id, summary_version, created_at FROM `{table_name}` WHERE id = :id"
             ),
             {"id": new_id},
         ).mappings().first()
@@ -123,7 +123,7 @@ def get_record_by_id(*, record_id: int, table_name: str) -> Optional[Dict[str, A
     """
     sql = text(
         f"""
-        SELECT id, agent_id, name, meta, created_at
+        SELECT id, agent_id, name, meta, summary_zip, summary_until_session_id, summary_version, created_at
         FROM `{table_name}` WHERE id = :id
         """
     )
@@ -140,6 +140,49 @@ def get_record_by_id(*, record_id: int, table_name: str) -> Optional[Dict[str, A
         except Exception:
             pass
     return row
+
+
+def get_record_summary(*, record_id: int, table_name: str) -> Optional[Dict[str, Any]]:
+    """读取 record 的总摘要与游标信息（summary_zip / summary_until_session_id）。"""
+    sql = text(
+        f"""
+        SELECT id, agent_id, summary_zip, summary_until_session_id, summary_version, created_at
+        FROM `{table_name}` WHERE id = :id
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        ret = conn.execute(sql, {"id": record_id}).mappings().first()
+    return dict(ret) if ret else None
+
+
+def update_record_summary_if_earlier(
+    *, record_id: int, summary_zip: str, summary_until_session_id: int, summary_version: int, table_name: str
+) -> bool:
+    """在 summary_until_session_id 更小时才更新，确保总摘要版本单调推进。"""
+    sql = text(
+        f"""
+        UPDATE `{table_name}`
+        SET summary_zip = :summary_zip, summary_until_session_id = :summary_until_session_id, summary_version = :summary_version
+        WHERE id = :id
+          AND (summary_until_session_id IS NULL OR summary_until_session_id < :summary_until_session_id)
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.begin() as conn:
+        res = conn.execute(
+            sql,
+            {
+                "id": int(record_id),
+                "summary_zip": str(summary_zip or ""),
+                "summary_until_session_id": int(summary_until_session_id),
+                "summary_version": int(summary_version),
+            },
+        )
+        try:
+            return int(res.rowcount or 0) > 0
+        except Exception:
+            return False
 
 
 

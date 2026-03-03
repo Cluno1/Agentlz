@@ -296,10 +296,73 @@ def check_session_for_rag(
         z = str(r.get("zip") or "")
         inp = r.get("input") if pos_from_end <= li else None
         outp = r.get("output") if pos_from_end <= lo else None
-        out.append({"input": inp, "output": outp, "zip": z})
+        out.append(
+            {
+                "session_id": r.get("session_id") or r.get("id"),
+                "count": r.get("count"),
+                "input": inp,
+                "output": outp,
+                "zip": z,
+                "zip_status": r.get("zip_status"),
+            }
+        )
     # 阶段7：记录数量并返回结构化结果
     logger.debug(f"完成 [check_session_for_rag] 历史纪录检查到的数量:{len(out)}")
     return out
+
+
+def get_recent_sessions_for_history(*, record_id: int, limit: int, min_session_id: int = 0) -> List[Dict[str, Any]]:
+    """
+    获取构建上下文所需的最近若干条会话。
+
+    读取策略：
+    - 优先从 Redis 读取最近 50 条历史（list+hash）；
+    - Redis 不命中时回退到 MySQL，并回填 Redis；
+    - 如指定 min_session_id，则只保留大于该值的会话；
+    - 最终裁剪到 limit 条（旧→新顺序）。
+    """
+    if int(record_id) <= 0:
+        return []
+    tables = _tables()
+    table = tables["session"]
+    items = chat_history_get(record_id=int(record_id), limit=50)
+    if not items:
+        rows = sess_repo.list_last_sessions(record_id=int(record_id), limit=50, table_name=table)
+        rebuilt: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                sid = int(r.get("id"))
+            except Exception:
+                continue
+            mi = r.get("meta_input")
+            mo = r.get("meta_output")
+            try:
+                inp = json.loads(mi) if isinstance(mi, str) else mi
+            except Exception:
+                inp = mi
+            try:
+                outp = json.loads(mo) if isinstance(mo, str) else mo
+            except Exception:
+                outp = mo
+            rebuilt.append(
+                {
+                    "session_id": sid,
+                    "count": int(r.get("count") or 0),
+                    "input": inp,
+                    "output": outp,
+                    "zip": str(r.get("zip") or ""),
+                    "zip_status": str(r.get("zip_status") or "pending"),
+                    "created_at": str(r.get("created_at") or ""),
+                }
+            )
+        if rebuilt:
+            chat_history_overwrite(record_id=int(record_id), items=rebuilt, ttl=3600, limit=50)
+        items = rebuilt
+    if min_session_id and int(min_session_id) > 0:
+        items = [it for it in items if int(it.get("session_id") or 0) > int(min_session_id)]
+    if limit and int(limit) > 0:
+        items = list(items[-int(limit):])
+    return items
 
 
 
@@ -415,51 +478,61 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
     s = get_settings()
     tables = _tables()
     history: List[Dict[str, Any]] = []
-    his_items: List[Tuple[str, str, str]] = []
+    his_joined = ""
     if int(record_id) > 0:
-        # 阶段2：拉取该记录的历史会话（最近若干轮），用于后续指代消解
-        history = check_session_for_rag(record_id=int(record_id), limit_input=5, limit_output=5)
-        his_items: List[Tuple[str, str, str]] = []
-        for x in history:
-            z = x.get("zip")
-            inp = x.get("input")
-            outp = x.get("output")
-            # 将输入与输出统一清洗为字符串（JSON/对象转字符串），避免提示词拼接异常
-            if inp is None or (isinstance(inp, str) and inp.strip() == ""):
-                inp = ""
-            if outp is None or (isinstance(outp, str) and outp.strip() == ""):
-                outp = ""
-            if inp is None and outp is None:
-                continue
-            if not isinstance(inp, str):
-                try:
-                    inp = json.dumps(inp, ensure_ascii=False)
-                except Exception:
-                    inp = str(inp)
-            if not isinstance(outp, str):
-                try:
-                    outp = json.dumps(outp, ensure_ascii=False)
-                except Exception:
-                    outp = str(outp)
-            his_items.append((inp or "", outp or "", z or ""))
-    else :
-        # 无历史记录的场景，后续依旧可进行检索（history 为空）
-        logger.debug("没有历史记录")
-        his_items=[]
-        history=[]
-    
+        summary_zip = ""
+        summary_until = 0
+        try:
+            rec_row = repo.get_record_summary(record_id=int(record_id), table_name=tables["record"])
+        except Exception:
+            rec_row = None
+        if rec_row:
+            summary_zip = str(rec_row.get("summary_zip") or "").strip()
+            try:
+                summary_until = int(rec_row.get("summary_until_session_id") or 0)
+            except Exception:
+                summary_until = 0
+        history = get_recent_sessions_for_history(record_id=int(record_id), limit=4, min_session_id=summary_until)
 
-    # 阶段3：将历史条目格式化为拼接字符串，作为提示词中的 <history> 参考
-    his_parts: List[str] = []
-    for i, (inp, outp, z) in enumerate(his_items, start=1):
-        inp_s = str(inp or "").strip()
-        out_s = str(outp or "").strip()
-        z_s = str(z or "").strip()
-        if inp_s != "" or out_s != "":
-            his_parts.append(f"第{i}轮: human:{inp_s}, llm:{out_s}")
-        elif z_s != "":
-            his_parts.append(f"第{i}轮: zip:{z_s}")
-    his_joined = "; ".join(his_parts)
+        def _to_text(v: Any) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, dict) and "text" in v:
+                try:
+                    return str(v.get("text") or "")
+                except Exception:
+                    return ""
+            if isinstance(v, str):
+                return v
+            try:
+                return json.dumps(v, ensure_ascii=False)
+            except Exception:
+                return str(v)
+
+        his_parts: List[str] = []
+        if summary_zip:
+            his_parts.append(f"【历史摘要（截至第{summary_until}轮）】\n{summary_zip}\n")
+        recent_lines: List[str] = []
+        for idx, it in enumerate(history, start=1):
+            count_val = it.get("count")
+            label = int(count_val) if isinstance(count_val, (int, float)) else idx
+            z = str(it.get("zip") or "").strip()
+            z_status = str(it.get("zip_status") or "").strip()
+            if z and z_status == "done":
+                recent_lines.append(f"第{label}轮: {z}")
+                continue
+            inp = _to_text(it.get("input"))
+            outp = _to_text(it.get("output"))
+            inp_s = str(inp or "").strip()
+            out_s = str(outp or "").strip()
+            if inp_s == "" and out_s == "":
+                continue
+            recent_lines.append(f"第{label}轮: human:{inp_s}, llm:{out_s}")
+        if recent_lines:
+            his_parts.append("【最近轮次】\n" + "\n".join(recent_lines))
+        his_joined = "\n".join([p for p in his_parts if str(p).strip() != ""]).strip()
+    else:
+        logger.debug("没有历史记录")
 
     # 没有历史记录时，创建新的记录
     if int(record_id) <= 0:

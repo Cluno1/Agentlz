@@ -56,6 +56,43 @@ def get_last_count(*, record_id: int, table_name: str) -> int:
         return 0
 
 
+def get_last_session_id(*, record_id: int, table_name: str) -> int:
+    """获取某个 record_id 最新的 session 主键 id（不存在则返回 0）。"""
+    sql = text(
+        f"SELECT COALESCE(MAX(id), 0) AS max_id FROM `{table_name}` WHERE record_id = :rid"
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        v = conn.execute(sql, {"rid": int(record_id)}).scalar()
+    try:
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+def list_sessions_in_id_range(
+    *, record_id: int, after_session_id: int, until_session_id: int, table_name: str
+) -> List[Dict[str, Any]]:
+    """按 session_id 区间读取会话，用于增量构建 record 总摘要。"""
+    sql = text(
+        f"""
+        SELECT id, record_id, count, meta_input, meta_output, zip, request_id, zip_status, zip_updated_at, created_at
+        FROM `{table_name}`
+        WHERE record_id = :rid
+          AND id > :after_id
+          AND id <= :until_id
+        ORDER BY id ASC
+        """
+    )
+    engine = get_mysql_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sql,
+            {"rid": int(record_id), "after_id": int(after_session_id), "until_id": int(until_session_id)},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def list_last_sessions(*, record_id: int, limit: int = 50, table_name: str) -> List[Dict[str, Any]]:
     """读取某个 record_id 最近 N 条会话（按旧→新顺序返回）。"""
     sql = text(
