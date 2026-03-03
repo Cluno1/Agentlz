@@ -8,6 +8,7 @@ from agentlz.core.logger import setup_logging
 import pika
 
 from agentlz.services.rag.document_service import process_document_from_cos_https
+from agentlz.services import scan_service
 from agentlz.services.cache_service import cache_get
 from agentlz.repositories import session_repository as sess_repo
 from agentlz.repositories import agent_repository as agent_repo
@@ -69,11 +70,13 @@ class MQService:
                 self._channel.queue_declare(queue='doc_parse_tasks', durable=True)
                 self._channel.queue_declare(queue='chat_persist_tasks', durable=True)
                 self._channel.queue_declare(queue='zip_tasks', durable=True)
+                self._channel.queue_declare(queue='doc_scan_tasks', durable=True)
                 self._channel.basic_qos(prefetch_count=1)
 
                 logger.info("开始监听文档解析任务队列...")
                 logger.info("开始监听聊天持久化任务队列...")
                 logger.info("开始监听zip任务队列...")
+                logger.info("开始监听扫描任务队列...")
 
                 # 设置消费者
                 self._channel.basic_consume(
@@ -89,6 +92,11 @@ class MQService:
                 self._channel.basic_consume(
                     queue='zip_tasks',
                     on_message_callback=self._process_zip_task,
+                    auto_ack=False
+                )
+                self._channel.basic_consume(
+                    queue='doc_scan_tasks',
+                    on_message_callback=self._process_scan_task,
                     auto_ack=False
                 )
 
@@ -346,6 +354,36 @@ class MQService:
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
+        except BizError as biz:
+            logger.error(f"业务异常，丢弃消息: {biz}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            save_to_dead_letter(body, reason=str(biz))
+        except Exception as sys_exc:
+            if retry >= max_retries:
+                logger.error(f"已达最大重试次数[{max_retries}]，丢弃消息")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                save_to_dead_letter(body, reason=str(sys_exc))
+            else:
+                headers["x-retry"] = retry + 1
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=method.routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(headers=headers),
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    def _process_scan_task(self, ch, method, properties, body):
+        headers = properties.headers or {}
+        retry = int(headers.get("x-retry", 0))
+        max_retries = self.settings.rabbitmq_max_retries
+        try:
+            message = json.loads(body.decode("utf-8"))
+            task_id = message.get("task_id")
+            if not task_id:
+                raise BizError("消息格式不完整，缺少必要字段")
+            scan_service.scan_upload_task(task_id=int(task_id))
+            ch.basic_ack(delivery_tag=method.delivery_tag)
         except BizError as biz:
             logger.error(f"业务异常，丢弃消息: {biz}")
             ch.basic_ack(delivery_tag=method.delivery_tag)

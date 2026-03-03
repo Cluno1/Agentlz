@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     cos_secret_key: str = Field(default=None, env="COS_SECRET_KEY")
     cos_region: str = Field(default=None, env="COS_REGION")
     cos_base_url: str = Field(default=None, env="COS_BASE_URL")
+    clamav_host: str = Field(default="127.0.0.1", env="CLAMAV_HOST")
+    clamav_port: int = Field(default=3310, env="CLAMAV_PORT")
+    clamav_timeout: int = Field(default=300, env="CLAMAV_TIMEOUT")
+    clamav_disabled: bool = Field(default=False, env="CLAMAV_DISABLED")
 
     # 自定义api
     chatopenai_api_key: str | None = Field(
@@ -118,6 +122,12 @@ class Settings(BaseSettings):
         default="session", env="SESSION_TABLE_NAME")
     record_session_table_name: str = Field(
         default="record_session", env="RECORD_SESSION_TABLE_NAME")
+    upload_task_table_name: str = Field(
+        default="upload_task", env="UPLOAD_TASK_TABLE_NAME")
+    upload_part_table_name: str = Field(
+        default="upload_part", env="UPLOAD_PART_TABLE_NAME")
+    file_fingerprint_table_name: str = Field(
+        default="file_fingerprint", env="FILE_FINGERPRINT_TABLE_NAME")
     # 模型表
     model_table_name: str = Field(default="model", env="MODEL_TABLE_NAME")
 

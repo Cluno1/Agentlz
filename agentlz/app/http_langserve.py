@@ -12,6 +12,7 @@ from agentlz.app.routers.chain import router as chain_router
 from agentlz.app.routers.system import router as system_router
 from agentlz.app.routers.mcp import router as mcp_router
 from agentlz.app.routers.model import router as model_router
+from agentlz.app.routers.uploads import router as uploads_router
 from agentlz.app.deps.auth_deps import require_auth
 from agentlz.schemas.responses import Result
 from fastapi.responses import JSONResponse
@@ -61,6 +62,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(users_router, dependencies=[Depends(require_auth)])
 app.include_router(document_router, dependencies=[Depends(require_auth)])
+app.include_router(uploads_router, dependencies=[Depends(require_auth)])
 app.include_router(chain_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_router, dependencies=[Depends(require_auth)])
 app.include_router(mcp_router, dependencies=[Depends(require_auth)])

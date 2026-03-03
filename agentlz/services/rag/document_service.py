@@ -20,6 +20,7 @@ from agentlz.services.rag.chunk_embeddings_service import (
 from agentlz.services.cos_service import (
     upload_document_to_cos,
     get_origin_url_from_save_https,
+    fastapi_prefix,
 )
 from agentlz.core.external_services import publish_to_rabbitmq
 from markitdown import MarkItDown
@@ -39,6 +40,92 @@ logger = setup_logging()
 - 更新操作不允许修改主键 `id` 与隔离字段 `tenant_id`，允许字段以仓储层白名单为准。
 - 表名默认 `document`，租户请求头默认 `X-Tenant-ID`，可通过配置覆盖。
 """
+
+
+def get_document_table_name() -> str:
+    table_name, _ = _get_table_and_header()
+    return table_name
+
+
+def build_save_https(cos_key: str) -> str:
+    return f"{fastapi_prefix}{cos_key}"
+
+
+def extract_cos_key(save_https: str) -> str:
+    return str(save_https or "").replace(fastapi_prefix, "")
+
+
+def parse_strategy_list(raw: Any) -> Optional[list[int]]:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        out = []
+        for s in raw:
+            try:
+                out.append(int(s))
+            except Exception:
+                continue
+        return out
+    if isinstance(raw, str):
+        try:
+            import json
+            val = json.loads(raw)
+            return parse_strategy_list(val)
+        except Exception:
+            parts = [p for p in raw.split(",") if p.strip()]
+            out = []
+            for p in parts:
+                try:
+                    out.append(int(p))
+                except Exception:
+                    continue
+            return out
+    return None
+
+
+def publish_document_chunk_tasks_after_scan(
+    *, doc_id: str, save_https: str, document_type: str, tenant_id: str, strategy: Optional[list[int]]
+) -> None:
+    table_name, _ = _get_table_and_header()
+    strategies = []
+    has_negative = False
+    for s in strategy or []:
+        try:
+            v = int(s)
+        except Exception:
+            continue
+        if v < 0:
+            has_negative = True
+        strategies.append(v)
+    if has_negative:
+        repo.update_document(
+            doc_id=doc_id,
+            payload={"status": "NEED_CHUNK"},
+            tenant_id=tenant_id,
+            table_name=table_name,
+        )
+        return
+    if strategies:
+        for strat in strategies:
+            msg = {
+                "doc_id": doc_id,
+                "save_https": save_https,
+                "document_type": document_type,
+                "tenant_id": tenant_id,
+                "strategy": strat,
+            }
+            publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
+            logger.info(f"创建文档 文件,已经发布解析任务: {msg}")
+    else:
+        msg = {
+            "doc_id": doc_id,
+            "save_https": save_https,
+            "document_type": document_type,
+            "tenant_id": tenant_id,
+            "strategy": 0,
+        }
+        publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
+        logger.info(f"创建文档 文件,已经发布解析任务: {msg}")
 
 
 suffix_map = {
@@ -772,10 +859,12 @@ def create_document_service(
     data["title"] = clean_filename(data)
     logger.info(f"最终的文档名称,title: {data.get('title')}")
 
-    # 上传文档到COS并获取URL
-    save_https = upload_document_to_cos(data.get("document"), data.get("title"), path)
+    from datetime import datetime
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    quarantine_path = f"quarantine/{doc_tenant_id}/{current_user_id}/{date_str}"
+    save_https = upload_document_to_cos(data.get("document"), data.get("title"), quarantine_path)
     data["save_https"] = save_https
-    data["status"] = "processing"
+    data["status"] = "pending_scan"
     data["content"] = ""
 
     logger.info(f"创建文档 文件,已经获取cos url: {save_https}")
@@ -806,81 +895,27 @@ def create_document_service(
     except Exception as e:
         logger.error(f"创建文档 文件,创建用户文档权限失败: {e}")
 
-    # 发布文档解析任务到 RabbitMQ
-
-    # 根据 strategy 数组发布解析任务；若包含负数则不发布并标记 NEED_CHUNK
     try:
-        # 解析策略为整数列表
-        strategies = []
-        has_negative = False
-        for s in (payload.strategy or []):
-            try:
-                v = int(s)
-            except Exception:
-                continue
-            if v < 0:
-                has_negative = True
-            strategies.append(v)
-        if has_negative:
-            repo.update_document(
-                doc_id=row.get("id"),
-                payload={"status": "NEED_CHUNK"},
-                tenant_id=doc_tenant_id,
-                table_name=table_name,
-            )
-            return row
-        if strategies:
-            for strat in strategies:
-                msg = {
-                    "doc_id": row.get("id"),
-                    "save_https": save_https,
-                    "document_type": data.get("document_type"),
-                    "tenant_id": doc_tenant_id,
-                    "strategy": strat,
-                }
-                publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
-                logger.info(f"创建文档 文件,已经发布解析任务: {msg}")
-        else:
-            # 未提供策略数组，按默认策略 0 发布一次
-            msg = {
-                "doc_id": row.get("id"),
-                "save_https": save_https,
-                "document_type": data.get("document_type"),
-                "tenant_id": doc_tenant_id,
-                "strategy": 0,
-            }
-            publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
-            logger.info(f"创建文档 文件,已经发布解析任务: {msg}")
+        from agentlz.services import scan_service
+        strategy_list = parse_strategy_list(payload.strategy)
+        scan_service.scan_document_and_publish(
+            doc_id=str(row.get("id")),
+            save_https=save_https,
+            document_type=str(data.get("document_type")),
+            tenant_id=doc_tenant_id,
+            file_hash=None,
+            title=str(data.get("title") or ""),
+            file_type="doc",
+            user_id=current_user_id,
+            filename=str(data.get("title") or ""),
+            strategy=strategy_list,
+        )
     except Exception as e:
-        logger.error(f"创建文档 文件,发布解析任务失败: {e}")
-        # 尝试重新初始化RabbitMQ连接并重试一次（仅对最后一次消息进行重试）
-        try:
-            from agentlz.core.external_services import close_all_connections
-            import time
-            close_all_connections()
-            time.sleep(1)
-            # 简化重试：默认策略重试
-            msg = {
-                "doc_id": row.get("id"),
-                "save_https": save_https,
-                "document_type": data.get("document_type"),
-                "tenant_id": doc_tenant_id,
-                "strategy": 0,
-            }
-            publish_to_rabbitmq("doc_parse_tasks", msg, durable=True)
-            logger.info(f"创建文档 文件,重试发布解析任务成功: {msg}")
-        except Exception as retry_e:
-            try:
-                repo.update_document(
-                    doc_id=row.get("id"),
-                    payload={"status": "fail"},
-                    tenant_id=doc_tenant_id,
-                    table_name=table_name,
-                )
-                logger.info(f"RabbitMQ发布任务失败,已将文档状态更新为失败: {row.get('id')}")
-            except Exception as update_e:
-                logger.error(f"RabbitMQ发布任务失败,更新文档状态也失败: {update_e}")
-    return row
+        logger.error(f"创建文档 文件,扫描触发失败: {e}")
+    updated = repo.get_document_by_id(doc_id=row.get("id"), tenant_id=doc_tenant_id, table_name=table_name)
+    if updated and updated.get("upload_time") is not None:
+        updated["upload_time"] = str(updated.get("upload_time"))
+    return updated or row
 
 
 def publish_document_chunk_tasks_service(
@@ -1005,6 +1040,38 @@ def process_document_from_cos_https(
     """
 
     try:
+        table_name, _ = _get_table_and_header()
+        row = repo.get_document_by_id(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
+        if row and str(row.get("status") or "") in ["pending_scan", "scan_failed"]:
+            raise Exception("扫描未通过，禁止解析")
+        if "quarantine/" in str(save_https or ""):
+            try:
+                from agentlz.services.scan_service import promote_from_quarantine
+                cos_key = extract_cos_key(save_https)
+                filename = str(row.get("title") or "document")
+                # 文档类型映射到文件类别；默认按文档处理
+                file_type = "doc"
+                # 使用上传者ID作为路径参与者；缺失时回退为0
+                user_id = int(row.get("uploaded_by_user_id") or 0)
+                new_key = promote_from_quarantine(
+                    cos_key=cos_key,
+                    file_type=file_type,
+                    tenant_id=str(tenant_id),
+                    user_id=user_id,
+                    filename=filename,
+                )
+                new_save_https = build_save_https(new_key)
+                # 更新文档为可解析状态
+                repo.update_document(
+                    doc_id=doc_id,
+                    payload={"save_https": new_save_https, "status": "processing"},
+                    tenant_id=tenant_id,
+                    table_name=table_name,
+                )
+                save_https = new_save_https
+                logger.info(f"隔离对象已自动转正 doc_id={doc_id} new_key={new_key}")
+            except Exception as e:
+                raise Exception(f"对象仍在隔离区且自动转正失败: {e}")
         ori_url = get_origin_url_from_save_https(save_https)
         logger.info(f"文档 {save_https} 转换为原始URL: {ori_url}")
         import requests

@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 from typing import Optional
+from agentlz.config.settings import get_settings
 
 
 class _ColoredFormatter(logging.Formatter):
@@ -38,7 +39,7 @@ class _ColoredFormatter(logging.Formatter):
 
 
 def setup_logging(
-    level: Optional[str] = "INFO",
+    level: Optional[str] = None,
     name: str = "agentlz",
     enable_color: bool = True,
     prefix: Optional[str] = None,
@@ -46,7 +47,8 @@ def setup_logging(
     fmt: Optional[str] = None,
     datefmt: Optional[str] = None,
 ) -> logging.Logger:
-    lvl = getattr(logging, (level or "INFO").upper(), logging.INFO)
+    cfg_level = level or getattr(get_settings(), "log_level", "INFO")
+    lvl = getattr(logging, (cfg_level or "INFO").upper(), logging.INFO)
     logger = logging.getLogger(name)
     logger.setLevel(lvl)
     if not any(getattr(h, "_agentlz_handler", False) for h in logger.handlers):

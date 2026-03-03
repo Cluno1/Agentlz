@@ -129,10 +129,13 @@ def create_document(
     # 读取文件内容
     try:
         file_content = document.file.read()
-        logger.info(f"文件读取成功: {document.filename}, 大小: {len(file_content)} bytes")
+        size_bytes = len(file_content)
+        logger.info(f"文件读取成功: {document.filename}, 大小: {size_bytes} bytes")
     except Exception as e:
         logger.error(f"文件读取失败: {e}")
         raise HTTPException(status_code=400, detail=f"文件读取失败: {str(e)}")
+    if size_bytes >= 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件超过10MB，请使用分片上传")
     
     # 创建payload对象（strategy 支持JSON数组字符串，如 ["0","1"] 或 [0,1]）
     import json
