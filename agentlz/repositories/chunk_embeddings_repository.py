@@ -33,6 +33,28 @@ def create_chunk_embedding(*, tenant_id: str, chunk_id: str, doc_id: str, embedd
                 "INSERT INTO chunk_embeddings (chunk_id, tenant_id, doc_id, embedding, content, chunk_index, length, strategy) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s) ON CONFLICT (chunk_id) DO NOTHING",
                 (chunk_id, tenant_id, doc_id, v, content, chunk_index, length, strategy),
             )
+            # 同步写入 BM25 文本分块表（用于关键词召回链路）
+            if content is not None:
+                try:
+                    # 代码分词：优先使用 jieba；不可用时回退为简单正则分词
+                    try:
+                        import jieba  # type: ignore
+                        seg = " ".join([t for t in jieba.lcut(str(content)) if str(t).strip() != ""])
+                    except Exception:
+                        import re
+                        terms = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]", str(content))
+                        seg = " ".join([t for t in terms if str(t).strip() != ""])
+                    cur.execute(
+                        """
+                        INSERT INTO chunk_bm25 (chunk_id, tenant_id, doc_id, content, content_seg)
+                        VALUES (%s,%s,%s,%s,%s)
+                        ON CONFLICT (chunk_id) DO UPDATE SET content = EXCLUDED.content, content_seg = EXCLUDED.content_seg, doc_id = EXCLUDED.doc_id
+                        """,
+                        (chunk_id, tenant_id, doc_id, content, seg),
+                    )
+                except Exception:
+                    # 容错：bm25 表不存在或扩展未启用时不影响主流程
+                    pass
             cur.execute(
                 "SELECT chunk_id, tenant_id, doc_id, content, created_at, chunk_index, length, strategy FROM chunk_embeddings WHERE chunk_id=%s",
                 (chunk_id,),

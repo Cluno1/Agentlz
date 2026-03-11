@@ -304,10 +304,82 @@ def reset_agent_mcp(agent_id: int, request: Request, claims: Dict[str, Any] = De
     )
     res = agent_service.reset_agent_mcp_service(agent_id=agent_id, tenant_id=tenant_id, claims=claims)
     return Result.ok(res)
+
+@router.post("/agent/observation", response_class=StreamingResponse)
+def observation_agent(payload: AgentChatInput, request: Request):
+    """
+    调用 Agent 进行聊天
+    
+    - `api_name`: Agent API 名称
+    - `api_key`: Agent API 密钥
+    - `type`: 聊天类型（0：创建新纪录，1：继续已有纪录,可以获取历史纪录）
+    - `record_id`: record的ID（仅在 `type=1` 时有效）
+    - `meta`: 可选的元数据字典（如用户 ID、会话 ID 等）
+
+    """
+    logger = setup_logging()
+    logger.info(f"进入:[ chat_agent ]: {payload}")
+
+    auth_header = request.headers.get("Authorization")
+    claims: Optional[Dict[str, Any]] = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        try:
+            claims = require_auth(auth_header)
+        except HTTPException as e:
+            if not (payload.api_key and payload.api_name):
+                raise e
+    agent_id = None
+    if payload.api_key and payload.api_name:
+        row = agent_service.get_agent_by_api_credentials_service(api_name=str(payload.api_name or ""), api_key=str(payload.api_key or ""))
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent不存在")
+        agent_id = int(row.get("id"))
+    else:
+        if not payload.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id不能为空")
+        tenant_id = require_tenant_id(request)
+        agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
+        agent_id = int(payload.agent_id)
+    logger.info(f"[chat_agent] 获取 agent id 成功: agent_id={agent_id}")
+    if payload.type == 1:
+        if not payload.record_id:
+            raise HTTPException(status_code=400, detail="record_id不能为空")
+        rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
+        logger.info(f"[chat_agent] 校验 record id 成功: record_id={payload.record_id}")
+        _meta = payload.meta or {}
+        try:
+            if claims and isinstance(claims, dict):
+                uid = str(claims.get("sub") or "").strip()
+                if uid:
+                    _meta["user_id"] = uid
+        except Exception:
+            pass
+        try:
+            _meta["tenant_id"] = require_tenant_id(request)
+        except Exception:
+            pass
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id), meta=_meta, is_observation=True)
+    else:
+        _meta = payload.meta or {}
+        try:
+            if claims and isinstance(claims, dict):
+                uid = str(claims.get("sub") or "").strip()
+                if uid:
+                    _meta["user_id"] = uid
+        except Exception:
+            pass
+        try:
+            _meta["tenant_id"] = require_tenant_id(request)
+        except Exception:
+            pass
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, meta=_meta, is_observation=True)
+    return StreamingResponse(generator, media_type="text/event-stream")
+
+
 @router.post("/agent/chat", response_class=StreamingResponse)
 def chat_agent(payload: AgentChatInput, request: Request):
     """
-    调用 Agent 进行聊天
+    调用 Agent 进行聊天和观测
     
     - `api_name`: Agent API 名称
     - `api_key`: Agent API 密钥

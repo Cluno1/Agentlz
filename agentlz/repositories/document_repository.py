@@ -259,6 +259,7 @@ def update_document(
         "tags",
         "description",
         "meta_https",
+        "save_https",
         "disabled",
         # 注：upload_time 通常由系统写入，不建议在普通更新中修改；如有需要可加入白名单
     ]

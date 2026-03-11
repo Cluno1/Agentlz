@@ -48,14 +48,17 @@ def get_document_table_name() -> str:
 
 
 def build_save_https(cos_key: str) -> str:
+    '''构建一个虚拟的链接，用于前端下载, 实际指向 COS 存储, 如localhost开头'''
     return f"{fastapi_prefix}{cos_key}"
 
 
 def extract_cos_key(save_https: str) -> str:
+    '''从虚拟的下载链接中提取 COS 存储的键'''
     return str(save_https or "").replace(fastapi_prefix, "")
 
 
 def parse_strategy_list(raw: Any) -> Optional[list[int]]:
+    """解析策略列表"""
     if raw is None:
         return None
     if isinstance(raw, list):
@@ -86,6 +89,11 @@ def parse_strategy_list(raw: Any) -> Optional[list[int]]:
 def publish_document_chunk_tasks_after_scan(
     *, doc_id: str, save_https: str, document_type: str, tenant_id: str, strategy: Optional[list[int]]
 ) -> None:
+    '''发布文档切割任务
+    1. 解析策略列表，过滤无效值
+    2. 检查是否包含负数策略，若有则更新文档状态为 NEED_CHUNK
+    3. 发布切割任务到 RabbitMQ
+    '''
     table_name, _ = _get_table_and_header()
     strategies = []
     has_negative = False
@@ -867,7 +875,7 @@ def create_document_service(
     data["status"] = "pending_scan"
     data["content"] = ""
 
-    logger.info(f"创建文档 文件,已经获取cos url: {save_https}")
+    logger.debug(f"创建文档 文件, 这是小文件, 走[agent\Agentlz\agentlz\services\rag\document_service.py->create_document_service],已经获取cos url: {save_https}")
 
     # uploaded_by_user_id 统一使用当前用户ID
     data["uploaded_by_user_id"] = current_user_id
@@ -1047,9 +1055,11 @@ def process_document_from_cos_https(
         if row and str(row.get("status") or "") in ["pending_scan", "scan_failed"]:
             raise Exception("扫描未通过，禁止解析")
         if "quarantine/" in str(save_https or ""):
+            logger.info(f"发现隔离区对象, 尝试转正 doc_id={doc_id} save_https={save_https}")
             try:
                 from agentlz.services.scan_service import promote_from_quarantine
                 cos_key = extract_cos_key(save_https)
+                logger.debug(f"虚拟cos_key={cos_key}")
                 filename = str(row.get("title") or "document")
                 # 文档类型映射到文件类别；默认按文档处理
                 file_type = "doc"

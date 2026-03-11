@@ -1252,8 +1252,18 @@ def agent_llm_exe_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], 
             break
         yield frame
 
-def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta: Optional[Dict[str, Any]] = None, is_observation: bool = False) -> Iterator[str]:
     '''
+    处理单轮对话请求，返回流式响应。
+
+    参数:
+        agent_id (int): 代理ID。
+        message (str): 用户输入的消息。
+        record_id (int, 可选): 记录ID，默认值为-1。
+        meta (Dict[str, Any], 可选): 元数据，默认值为None。
+
+    返回:
+        Iterator[str]: 流式响应的迭代器。
     '''
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
     logger.debug(f"进入 [agent_chat_service] agent_id={agent_id} record_id={record_id}")
@@ -1296,6 +1306,35 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
     except Exception:
         meta_for_record = meta
     out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
+    # 观测模式：将RAG输出通过WebSocket推送给该用户
+    try:
+        if bool(is_observation):
+            from agentlz.core.ws_manager import get_ws_manager
+            ws = get_ws_manager()
+            tenant_id = None
+            user_id = None
+            if isinstance(meta, dict):
+                tid = str(meta.get("tenant_id") or "").strip()
+                uid = str(meta.get("user_id") or "").strip()
+                tenant_id = tid or None
+                user_id = uid or None
+            if tenant_id and user_id:
+                payload = {
+                    "event": "rag.observation",
+                    "agent_id": int(agent_id),
+                    "record_id": int(out.get("record_id") or record_id),
+                    "doc": str(out.get("doc") or ""),
+                    "history": str(out.get("history") or ""),
+                    "message": str(out.get("message") or ""),
+                    "messages": out.get("messages") or [],
+                }
+                fut = ws.submit(ws.send_to_user(str(tenant_id), str(user_id), payload))
+                if fut is None:
+                    pass
+            else:
+                logger.debug("观测模式开启，但 meta 中缺少 tenant_id 或 user_id，跳过 WebSocket 发送")
+    except Exception:
+        logger.debug("观测模式发送失败，继续主流程")
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:

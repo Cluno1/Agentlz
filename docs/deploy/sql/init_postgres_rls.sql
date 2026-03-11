@@ -43,3 +43,30 @@ CREATE POLICY tenant_isolate ON chunk_embeddings
 
 CREATE INDEX IF NOT EXISTS idx_ce_embedding_l2
   ON chunk_embeddings USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);
+
+-- 文本检索支持（无需扩展：代码分词 + simple 配置）
+DROP TABLE IF EXISTS chunk_bm25;
+CREATE TABLE IF NOT EXISTS chunk_bm25 (
+    chunk_id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    doc_id VARCHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    content_seg TEXT NOT NULL,
+    -- simple 配置的全文索引（代码侧已分词为空格分隔）
+    content_seg_fts tsvector GENERATED ALWAYS AS (to_tsvector('simple', content_seg)) STORED,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    FOREIGN KEY (chunk_id) REFERENCES chunk_embeddings(chunk_id) ON DELETE CASCADE
+);
+
+-- 原生全文索引（GIN）
+CREATE INDEX IF NOT EXISTS idx_cb_fts ON chunk_bm25 USING gin (content_seg_fts);
+-- 租户 + 文档复合索引，加速粗筛
+CREATE INDEX IF NOT EXISTS idx_cb_tenant_doc ON chunk_bm25 (tenant_id, doc_id);
+
+-- 启用行级安全
+ALTER TABLE chunk_bm25 ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolate ON chunk_bm25;
+CREATE POLICY tenant_isolate ON chunk_bm25
+  FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant', true)::varchar)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::varchar);

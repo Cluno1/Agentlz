@@ -53,6 +53,7 @@ def get_upload_task(*, task_id: int) -> Optional[Dict[str, Any]]:
 
 
 def update_upload_task(*, task_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """更新上传任务"""
     task_table, _, _ = _table_names()
     sets = []
     params: Dict[str, Any] = {"id": task_id}

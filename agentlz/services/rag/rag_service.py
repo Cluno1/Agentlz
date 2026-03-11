@@ -16,6 +16,9 @@ from agentlz.repositories import document_repository as doc_repo
 from agentlz.services.rag import document_service as doc_service
 from agentlz.services.rag import chunk_embeddings_service as emb_service
 from agentlz.repositories import session_repository as sess_repo
+from agentlz.repositories import chunk_bm25_repository as bm25_repo
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 import json
 from agentlz.agents.rag.rag_agent import get_rag_query_agent, rag_build_queries
 from agentlz.schemas.rag import RAGQueryInput, RAGQueryOutput
@@ -187,6 +190,232 @@ def get_doc_topk_messages(
     return out
 
 
+def get_doc_topk_multi(
+    *,
+    agent_id: int,
+    message: str,
+    messages: List[str],
+    limit: int = 5,
+    distance_metric: str = "euclidean",
+    include_vector: bool = False,
+) -> list[Dict[str, Any]]:
+    """多链路召回（向量 + 中文全文检索 + 元数据召回）并融合重排，返回 Top-K
+    
+    参数：
+    - agent_id：Agent 主键 ID
+    - message：输入消息文本
+    - messages：优化后的查询短句数组
+    - limit：最终返回 Top-K
+    - distance_metric：向量距离（euclidean/cosine）
+    - include_vector：是否返回向量
+    """
+    logger = setup_logging(level="DEBUG", name="agentlz.rag_service", prefix="[RAG 服务]")
+    logger.debug(f"进入 [get_doc_topk_multi] agent_id={agent_id} limit={limit}")
+    s = get_settings()
+    VECTOR_TOP_K = int(getattr(s, "rag_vector_top_k", 50) or 50)
+    BM25_TOP_K = int(getattr(s, "rag_bm25_top_k", 50) or 50)
+    FINAL_TOP_K = int(limit if int(limit) > 0 else getattr(s, "rag_final_top_k", 20) or 20)
+    RERANK_ENABLED = bool(getattr(s, "rag_rerank_enabled", True))
+    BM25_ENABLED = bool(getattr(s, "rag_bm25_enabled", True))
+    rerank_model_name = str(getattr(s, "rag_rerank_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"))
+
+    grouped = doc_service.list_agent_related_document_ids_service(agent_id=int(agent_id))
+    if not grouped:
+        logger.debug("无关联文档，返回空列表")
+        return []
+
+    def _allowed_docs_for_tenant(tenant_id: str, dids: List[str]) -> List[str]:
+        table_name = getattr(get_settings(), "document_table_name", "document")
+        allowed: List[str] = []
+        for did in dids:
+            try:
+                row = doc_repo.get_document_with_names_by_id_any_tenant(
+                    doc_id=str(did),
+                    table_name=table_name,
+                    user_table_name=getattr(s, "user_table_name", "users"),
+                    tenant_table_name=getattr(s, "tenant_table_name", "tenant"),
+                )
+            except Exception:
+                row = None
+            if row and int(row.get("disabled") or 0) == 0:
+                allowed.append(str(did))
+        return allowed
+
+    def _to_terms(text: str) -> List[str]:
+        """将消息拆分为词条（简单中文/英文混合），用于 tsquery 与元数据匹配"""
+        if not isinstance(text, str) or text.strip() == "":
+            return []
+        # 英文/数字：按非字母数字分割；中文：保留连贯汉字序列
+        parts = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", text)
+        return [p for p in parts if p]
+
+    def _to_tsquery_str(terms: List[str]) -> str:
+        """构造 tsquery（AND 连接），示例: ['配置','Agent'] -> '配置 & Agent'"""
+        return " & ".join(terms[:8])  # 控制最大项数，避免过长
+
+    best_by_chunk: Dict[str, Dict[str, Any]] = {}
+    vec_list: List[Dict[str, Any]] = []
+    bm25_list: List[Dict[str, Any]] = []
+    doc_boost: Dict[str, float] = {}
+
+    def _vec_task():
+        local: List[Dict[str, Any]] = []
+        for tid, did_list in grouped.items():
+            allowed = _allowed_docs_for_tenant(str(tid), [str(x) for x in did_list])
+            if not allowed:
+                continue
+            res = emb_service.search_similar_chunks_service(
+                tenant_id=str(tid),
+                message=message,
+                messages=messages,
+                doc_ids=allowed,
+                distance_metric=distance_metric,
+                limit=VECTOR_TOP_K,
+                include_vector=include_vector,
+            ) or []
+            for r in res:
+                try:
+                    sim = 1.0 / (1.0 + float(r.get("similarity_score", 1e9)))
+                except Exception:
+                    sim = 0.0
+                local.append({
+                    "chunk_id": str(r.get("chunk_id") or ""),
+                    "doc_id": str(r.get("doc_id") or ""),
+                    "content": r.get("content"),
+                    "score": float(sim),
+                    "type": "vector",
+                    "created_at": r.get("created_at"),
+                })
+        return local
+
+    def _bm25_task():
+        local: List[Dict[str, Any]] = []
+        if not BM25_ENABLED:
+            return local
+        terms = _to_terms(message)
+        tsq = _to_tsquery_str(terms)
+        if tsq.strip() == "":
+            return local
+        for tid, did_list in grouped.items():
+            allowed = _allowed_docs_for_tenant(str(tid), [str(x) for x in did_list])
+            if not allowed:
+                continue
+            rows = bm25_repo.search_chunks_by_tsquery(tenant_id=str(tid), doc_ids=allowed, tsquery=tsq, limit=BM25_TOP_K)
+            for r in rows or []:
+                local.append({
+                    "chunk_id": str(r.get("chunk_id") or ""),
+                    "doc_id": str(r.get("doc_id") or ""),
+                    "content": r.get("content"),
+                    "score": float(r.get("score") or 0.0),
+                    "type": "bm25",
+                })
+        return local
+
+    def _meta_task():
+        boost: Dict[str, float] = {}
+        terms = _to_terms(message)
+        if not terms:
+            return boost
+        tset = set(terms)
+        for tid, did_list in grouped.items():
+            allowed = _allowed_docs_for_tenant(str(tid), [str(x) for x in did_list])
+            for did in allowed:
+                try:
+                    row = doc_repo.get_document_with_names_by_id_any_tenant(
+                        doc_id=str(did),
+                        table_name=getattr(get_settings(), "document_table_name", "document"),
+                        user_table_name=getattr(get_settings(), "user_table_name", "users"),
+                        tenant_table_name=getattr(get_settings(), "tenant_table_name", "tenant"),
+                    )
+                except Exception:
+                    row = None
+                if not row:
+                    continue
+                title = str(row.get("title") or "")
+                tags = str(row.get("tags") or "")
+                desc = str(row.get("description") or "")
+                text = " ".join([title, tags, desc])
+                words = set(_to_terms(text))
+                inter = words & tset
+                if inter:
+                    # 简单提升：匹配项数量作为 boost
+                    boost[str(did)] = float(len(inter))
+        return boost
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_vec = ex.submit(_vec_task)
+        f_bm = ex.submit(_bm25_task)
+        f_meta = ex.submit(_meta_task)
+        vec_list = f_vec.result()
+        bm25_list = f_bm.result()
+        doc_boost = f_meta.result()
+
+    # RRF 融合（k=60）；按来源排名计算倒数和
+    k_rrf = 60.0
+    # 构建排名索引
+    vec_sorted = sorted(vec_list, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    bm_sorted = sorted(bm25_list, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    rank_vec: Dict[str, int] = {x["chunk_id"]: i + 1 for i, x in enumerate(vec_sorted)}
+    rank_bm: Dict[str, int] = {x["chunk_id"]: i + 1 for i, x in enumerate(bm_sorted)}
+
+    # 合并并计算 RRF + 元数据提升
+    seen_chunks: Dict[str, Dict[str, Any]] = {}
+    for x in vec_sorted + bm_sorted:
+        cid = x["chunk_id"]
+        existed = seen_chunks.get(cid)
+        if existed is None:
+            seen_chunks[cid] = {
+                "chunk_id": cid,
+                "doc_id": x["doc_id"],
+                "content": x["content"],
+                "score": float(x.get("score", 0.0)),
+                "type": x["type"],
+            }
+        else:
+            # 保留更高的原始分数
+            if float(existed.get("score", 0.0)) < float(x.get("score", 0.0)):
+                existed["score"] = float(x.get("score", 0.0))
+    fused: List[Dict[str, Any]] = []
+    for cid, item in seen_chunks.items():
+        r1 = rank_vec.get(cid)
+        r2 = rank_bm.get(cid)
+        rrf = 0.0
+        if r1 is not None:
+            rrf += 1.0 / (k_rrf + float(r1))
+        if r2 is not None:
+            rrf += 1.0 / (k_rrf + float(r2))
+        # 元数据提升按 doc_id 叠加
+        boost = float(doc_boost.get(item["doc_id"], 0.0))
+        fused.append({
+            **item,
+            "rrf_score": rrf,
+            "boost": boost,
+            "fused_score": rrf + (0.02 * boost),  # 每个命中项加微小权重
+        })
+
+    if not fused:
+        logger.debug("召回为空，返回空列表")
+        return []
+
+    # RRF + 重排器（Cross-Encoder）：先用 RRF 选出候选，再由重排器排序
+    if RERANK_ENABLED:
+        try:
+            from sentence_transformers import CrossEncoder
+            ce = CrossEncoder(rerank_model_name)
+            pairs = [(message, str(r.get("content") or "")) for r in fused]
+            rs = ce.predict(pairs)
+            for i, r in enumerate(fused):
+                r["rerank_score"] = float(rs[i])
+            fused.sort(key=lambda x: (float(x.get("rerank_score", 0.0)), float(x.get("fused_score", 0.0))), reverse=True)
+        except Exception:
+            logger.exception("重排失败，退回按综合分排序")
+            fused.sort(key=lambda x: float(x.get("fused_score", 0.0)), reverse=True)
+    else:
+        fused.sort(key=lambda x: float(x.get("fused_score", 0.0)), reverse=True)
+
+    final = fused[:FINAL_TOP_K]
+    logger.debug(f"完成 [get_doc_topk_multi] count={len(final)}")
+    return final
 def check_all_session_detail_by_record(*, record_id: int) -> List[Dict[str, Any]]:
     """检查记录关联的所有会话（输入/输出）
 
@@ -642,8 +871,8 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
                     optimized_msgs = []
             
             # 阶段6：使用优化后的短句数组执行文档检索，获取 TopK 文档
-            logger.debug(f"继续 [agent_chat_get_rag] 开始[get_doc_topk_messages] 优化后的messages={optimized_msgs}")
-            rag = get_doc_topk_messages(agent_id=int(agent_id), message=message, messages=optimized_msgs)
+            logger.debug(f"继续 [agent_chat_get_rag] 开始[get_doc_topk_multi] 优化后的messages={optimized_msgs}")
+            rag = get_doc_topk_multi(agent_id=int(agent_id), message=message, messages=optimized_msgs)
             
         
         # 阶段7：汇总检索到的文档内容为字符串，组装最终输出对象
