@@ -116,6 +116,61 @@ CREATE TABLE `document` (
     INDEX `idx_document_status` (`tenant_id`, `status`) USING BTREE -- 租户+状态组合索引，提高状态筛选性能
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
+DROP TABLE IF EXISTS `eva_json`;
+CREATE TABLE `eva_json` (
+    `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '测评集ID',
+    `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID',
+    `scope` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'tenant' COMMENT '范围：self/tenant/system',
+    `uploaded_by_user_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '上传者用户ID',
+    `status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ready' COMMENT '状态：raw/ready/disabled',
+    `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '测评集名称',
+    `data_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '测评数据JSON（建议alpaca数组）',
+    `total_count` int(11) NOT NULL DEFAULT 0 COMMENT '样本总数',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`) USING BTREE,
+    INDEX `idx_eva_json_tenant` (`tenant_id`) USING BTREE,
+    INDEX `idx_eva_json_tenant_status` (`tenant_id`, `status`) USING BTREE,
+    INDEX `idx_eva_json_uploader` (`uploaded_by_user_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+DROP TABLE IF EXISTS `eva_version`;
+CREATE TABLE `eva_version` (
+    `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '版本ID',
+    `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID',
+    `agent_id` bigint(20) UNSIGNED NOT NULL COMMENT 'Agent ID',
+    `created_by_user_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建用户ID',
+    `prompt` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '提示词快照',
+    `document_ids_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '文档选择快照JSON',
+    `strategy_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '策略快照JSON',
+    `mcp_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT 'MCP快照JSON',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`) USING BTREE,
+    INDEX `idx_eva_version_agent` (`tenant_id`, `agent_id`) USING BTREE,
+    INDEX `idx_eva_version_created` (`created_at`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
+DROP TABLE IF EXISTS `eva_content`;
+CREATE TABLE `eva_content` (
+    `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '测评结果ID',
+    `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID',
+    `eva_json_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '测评集ID',
+    `eva_version_id` bigint(20) UNSIGNED NOT NULL COMMENT '版本ID',
+    `status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'queued' COMMENT '状态：queued/running/done/failed',
+    `total_count` int(11) NOT NULL DEFAULT 0 COMMENT '总数',
+    `completed_count` int(11) NOT NULL DEFAULT 0 COMMENT '已完成数',
+    `content_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '结果JSON数组',
+    `started_at` datetime NULL DEFAULT NULL COMMENT '开始时间',
+    `finished_at` datetime NULL DEFAULT NULL COMMENT '完成时间',
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`) USING BTREE,
+    INDEX `idx_eva_content_dataset` (`tenant_id`, `eva_json_id`) USING BTREE,
+    INDEX `idx_eva_content_version` (`tenant_id`, `eva_version_id`) USING BTREE,
+    INDEX `idx_eva_content_status` (`tenant_id`, `status`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
+
 DROP TABLE IF EXISTS `user_doc_permission`;
 
 -- 用户-文档权限关系表：定义用户对文档的访问/操作权限
@@ -167,6 +222,7 @@ CREATE TABLE `agent` (
   `system_prompt` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '系统提示词（System Prompt）',
   `meta` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '扩展元数据（JSON等格式）',
   `tenant_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '租户ID（多租户隔离）',
+  `eva_version_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '当前测评版本ID（eva_version.id，可空）',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '创建的用户ID',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

@@ -27,9 +27,10 @@ import socket
 import logging
 from typing import Any, Dict, Optional, Tuple
 from agentlz.config.settings import get_settings
-from agentlz.core.external_services import get_cos_client
+from agentlz.core.external_services import get_cos_client, publish_to_rabbitmq
 from agentlz.repositories import document_repository as doc_repo
 from agentlz.repositories import upload_repository as upload_repo
+from agentlz.repositories import evaluation_repository as eva_repo
 from agentlz.services.cos_service import copy_object, delete_object
 from agentlz.services.rag import document_service
 from agentlz.core.logger import setup_logging
@@ -177,6 +178,8 @@ def promote_from_quarantine(cos_key: str, file_type: str, tenant_id: str, user_i
     """
     import uuid
     from datetime import datetime
+    import time
+    from agentlz.services.cos_service import head_object
     date_str = datetime.now().strftime("%Y-%m-%d")
     if file_type == "video":
         base = f"video/{tenant_id}"
@@ -184,8 +187,35 @@ def promote_from_quarantine(cos_key: str, file_type: str, tenant_id: str, user_i
         base = f"document/{tenant_id}"
     new_key = f"{base}/{date_str}/{uuid.uuid4().hex[:16]}_{filename}"
     logger.debug(f"隔离区转正 from={cos_key} to={new_key}")
+    head_ok = False
+    last_head_err: Optional[Exception] = None
+    for _ in range(3):
+        try:
+            head_object(cos_key)
+            head_ok = True
+            break
+        except Exception as e:
+            last_head_err = e
+            time.sleep(0.2)
+    if not head_ok:
+        raise RuntimeError(f"quarantine_object_not_found: {cos_key} err={last_head_err}")
     copy_object(cos_key, new_key)
-    delete_object(cos_key)
+    promoted_ok = False
+    last_promote_err: Optional[Exception] = None
+    for _ in range(5):
+        try:
+            head_object(new_key)
+            promoted_ok = True
+            break
+        except Exception as e:
+            last_promote_err = e
+            time.sleep(0.2)
+    if not promoted_ok:
+        raise RuntimeError(f"promote_not_ready: {new_key} err={last_promote_err}")
+    try:
+        delete_object(cos_key)
+    except Exception:
+        pass
     return new_key
 
 
@@ -226,6 +256,7 @@ def scan_upload_task(task_id: int) -> Optional[Dict[str, Any]]:
         ok = False
     logger.info(f"扫描上传任务：扫描完成 task_id={task_id} 安全={ok} 计算MD5={file_hash} 大小Bytes={_size}")
     doc_id = task.get("document_id")
+    is_evaluation = bool(int(task.get("is_evaluation") or 0))
     if ok:
         new_key = promote_from_quarantine(
             cos_key=cos_key,
@@ -242,40 +273,54 @@ def scan_upload_task(task_id: int) -> Optional[Dict[str, Any]]:
         )
         logger.info(f"扫描上传任务：更新上传任务状态完成 task_id={task_id} scan_status=passed status=completed cos_key={new_key}")
         if doc_id:
-            doc_repo.update_document(
-                doc_id=str(doc_id),
-                payload={"save_https": save_https, "status": "processing"},
-                tenant_id=str(task.get("tenant_id") or "default"),
-                table_name=document_service.get_document_table_name(),
-            )
-            logger.info(f"扫描上传任务：更新文档完成 doc_id={doc_id} save_https={save_https} status=processing")
-            document_service.publish_document_chunk_tasks_after_scan(
-                doc_id=str(doc_id),
-                save_https=save_https,
-                document_type=str(task.get("document_type") or "txt"),
-                tenant_id=str(task.get("tenant_id") or "default"),
-                strategy=document_service.parse_strategy_list(task.get("strategy")),
-            )
-            logger.info(f"扫描上传任务：已发布解析任务 doc_id={doc_id} strategy={document_service.parse_strategy_list(task.get('strategy')) or [0]}")
-            try:
-                strategies = document_service.parse_strategy_list(task.get("strategy")) or [0]
-                logger.info(f"扫描上传任务：同步解析开始 doc_id={doc_id} strategies={strategies}")
-                for strat in strategies:
-                    try:
-                        logger.info(f"扫描上传任务：同步解析执行 doc_id={doc_id} strategy={strat}")
-                        document_service.process_document_from_cos_https(
-                            save_https=save_https,
-                            document_type=str(task.get("document_type") or "txt"),
-                            doc_id=str(doc_id),
-                            tenant_id=str(task.get("tenant_id") or "default"),
-                            strategy=int(strat),
-                        )
-                        logger.info(f"扫描上传任务：同步解析完成 doc_id={doc_id} strategy={strat}")
-                    except Exception as e:
-                        logger.warning(f"同步解析失败 task_id={task_id} doc_id={doc_id} strategy={strat}: {e}")
-                        continue
-            except Exception as e:
-                logger.warning(f"同步解析流程初始化失败 task_id={task_id} doc_id={doc_id}: {e}")
+            if is_evaluation:
+                eva_repo.update_eva_doc(
+                    doc_id=str(doc_id),
+                    payload={"save_https": save_https, "status": "processing"},
+                    tenant_id=str(task.get("tenant_id") or "default"),
+                    table_name="eva_doc",
+                )
+                publish_to_rabbitmq(
+                    "eva_parse_tasks",
+                    {"eva_doc_id": str(doc_id), "tenant_id": str(task.get("tenant_id") or "default")},
+                    durable=True,
+                )
+                logger.info(f"扫描上传任务：已发布测评解析任务 eva_doc_id={doc_id}")
+            else:
+                doc_repo.update_document(
+                    doc_id=str(doc_id),
+                    payload={"save_https": save_https, "status": "processing"},
+                    tenant_id=str(task.get("tenant_id") or "default"),
+                    table_name=document_service.get_document_table_name(),
+                )
+                logger.info(f"扫描上传任务：更新文档完成 doc_id={doc_id} save_https={save_https} status=processing")
+                document_service.publish_document_chunk_tasks_after_scan(
+                    doc_id=str(doc_id),
+                    save_https=save_https,
+                    document_type=str(task.get("document_type") or "txt"),
+                    tenant_id=str(task.get("tenant_id") or "default"),
+                    strategy=document_service.parse_strategy_list(task.get("strategy")),
+                )
+                logger.info(f"扫描上传任务：已发布解析任务 doc_id={doc_id} strategy={document_service.parse_strategy_list(task.get('strategy')) or [0]}")
+                try:
+                    strategies = document_service.parse_strategy_list(task.get("strategy")) or [0]
+                    logger.info(f"扫描上传任务：同步解析开始 doc_id={doc_id} strategies={strategies}")
+                    for strat in strategies:
+                        try:
+                            logger.info(f"扫描上传任务：同步解析执行 doc_id={doc_id} strategy={strat}")
+                            document_service.process_document_from_cos_https(
+                                save_https=save_https,
+                                document_type=str(task.get("document_type") or "txt"),
+                                doc_id=str(doc_id),
+                                tenant_id=str(task.get("tenant_id") or "default"),
+                                strategy=int(strat),
+                            )
+                            logger.info(f"扫描上传任务：同步解析完成 doc_id={doc_id} strategy={strat}")
+                        except Exception as e:
+                            logger.warning(f"同步解析失败 task_id={task_id} doc_id={doc_id} strategy={strat}: {e}")
+                            continue
+                except Exception as e:
+                    logger.warning(f"同步解析流程初始化失败 task_id={task_id} doc_id={doc_id}: {e}")
         upload_repo.upsert_fingerprint(
             {
                 "tenant_id": str(task.get("tenant_id") or "default"),
@@ -294,15 +339,63 @@ def scan_upload_task(task_id: int) -> Optional[Dict[str, Any]]:
         )
         logger.info(f"扫描上传任务：标记上传任务失败 task_id={task_id}")
         if doc_id:
-            doc_repo.update_document(
-                doc_id=str(doc_id),
-                payload={"status": "scan_failed"},
-                tenant_id=str(task.get("tenant_id") or "default"),
-                table_name=document_service.get_document_table_name(),
-            )
+            if is_evaluation:
+                eva_repo.update_eva_doc(
+                    doc_id=str(doc_id),
+                    payload={"status": "scan_failed"},
+                    tenant_id=str(task.get("tenant_id") or "default"),
+                    table_name="eva_doc",
+                )
+            else:
+                doc_repo.update_document(
+                    doc_id=str(doc_id),
+                    payload={"status": "scan_failed"},
+                    tenant_id=str(task.get("tenant_id") or "default"),
+                    table_name=document_service.get_document_table_name(),
+                )
         logger.info(f"扫描上传任务：标记文档失败 doc_id={doc_id} status=scan_failed")
     logger.info(f"扫描上传任务结束：task_id={task_id} 安全={ok}")
     return upload_repo.get_upload_task(task_id=task_id)
+
+
+def scan_evaluation_and_publish(
+    *, eva_doc_id: str, save_https: str, document_type: str, tenant_id: str, user_id: int, filename: str
+) -> Dict[str, Any]:
+    cos_key = document_service.extract_cos_key(save_https)
+    logger.info(f"扫描测评文件并发布：准备扫描 eva_doc_id={eva_doc_id} tenant_id={tenant_id} user_id={user_id} cos_key={cos_key} filename={filename}")
+    ok, computed_hash, _size = scan_cos_object(cos_key)
+    logger.info(f"扫描测评文件并发布：扫描完成 eva_doc_id={eva_doc_id} 安全={ok} 计算MD5={computed_hash} 大小Bytes={_size}")
+    if ok:
+        new_key = promote_from_quarantine(
+            cos_key=cos_key,
+            file_type="doc",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            filename=filename,
+        )
+        logger.info(f"扫描测评文件并发布：隔离区转正完成 eva_doc_id={eva_doc_id} from={cos_key} to={new_key}")
+        new_save_https = document_service.build_save_https(new_key)
+        eva_repo.update_eva_doc(
+            doc_id=eva_doc_id,
+            payload={"save_https": new_save_https, "status": "processing"},
+            tenant_id=tenant_id,
+            table_name="eva_doc",
+        )
+        publish_to_rabbitmq(
+            "eva_parse_tasks",
+            {"eva_doc_id": eva_doc_id, "tenant_id": tenant_id},
+            durable=True,
+        )
+        logger.info(f"扫描测评文件并发布：已发布解析任务 eva_doc_id={eva_doc_id}")
+        return {"status": "passed", "save_https": new_save_https, "file_hash": computed_hash}
+    eva_repo.update_eva_doc(
+        doc_id=eva_doc_id,
+        payload={"status": "scan_failed"},
+        tenant_id=tenant_id,
+        table_name="eva_doc",
+    )
+    logger.info(f"扫描测评文件并发布：失败 eva_doc_id={eva_doc_id} md5={computed_hash}")
+    return {"status": "failed", "save_https": save_https, "file_hash": computed_hash}
 
 
 def scan_document_and_publish(

@@ -76,13 +76,13 @@ def list_agents_agg(
     list_sql = text(
         f"""
         SELECT 
-            b.id, b.name, b.description, b.api_name, b.api_key, b.system_prompt, b.meta, b.tenant_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
+            b.id, b.name, b.description, b.api_name, b.api_key, b.system_prompt, b.meta, b.tenant_id, b.eva_version_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
             COALESCE(mcps.mcp_ids, '') AS mcp_ids,
             COALESCE(mcps.mcp_names, '') AS mcp_names,
             COALESCE(docs.doc_ids, '') AS doc_ids,
             COALESCE(docs.doc_titles, '') AS doc_titles
         FROM (
-            SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+            SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
             FROM `{agent_table_name}`
             {where_sql}
             ORDER BY {sort_col} {order_dir}
@@ -140,13 +140,13 @@ def list_self_agents_agg(
     list_sql = text(
         f"""
         SELECT 
-            b.id, b.name, b.description, b.api_name, b.api_key, b.system_prompt, b.meta, b.tenant_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
+            b.id, b.name, b.description, b.api_name, b.api_key, b.system_prompt, b.meta, b.tenant_id, b.eva_version_id, b.created_at, b.created_by_id, b.updated_at, b.updated_by_id, b.disabled,
             COALESCE(mcps.mcp_ids, '') AS mcp_ids,
             COALESCE(mcps.mcp_names, '') AS mcp_names,
             COALESCE(docs.doc_ids, '') AS doc_ids,
             COALESCE(docs.doc_titles, '') AS doc_titles
         FROM (
-            SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+            SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
             FROM `{agent_table_name}`
             {where_sql}
             ORDER BY {sort_col} {order_dir}
@@ -188,7 +188,7 @@ def get_agent_with_user_and_perm(
     sql = text(
         f"""
         SELECT 
-            a.id, a.name, a.description, a.api_name, a.api_key, a.system_prompt, a.meta, a.tenant_id, a.created_at, a.created_by_id, a.updated_at, a.updated_by_id, a.disabled,
+            a.id, a.name, a.description, a.api_name, a.api_key, a.system_prompt, a.meta, a.tenant_id, a.eva_version_id, a.created_at, a.created_by_id, a.updated_at, a.updated_by_id, a.disabled,
             u.role AS user_role,
             u.tenant_id AS user_tenant_id,
             up.perm AS user_perm
@@ -219,6 +219,7 @@ def update_agent_no_read(
         "disabled",
         "created_by_id",
         "updated_by_id",
+        "eva_version_id",
     ]
     sets: List[str] = []
     params: Dict[str, Any] = {"id": int(agent_id), "tenant_id": str(tenant_id)}
@@ -284,7 +285,7 @@ def list_accessible_agents_by_user(
     count_sql = text(f"SELECT COUNT(*) AS cnt FROM `{agent_table_name}` WHERE {where_sql}")
     list_sql = text(
         f"""
-        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
         FROM `{agent_table_name}`
         WHERE {where_sql}
         ORDER BY {sort_col} {order_dir}
@@ -310,7 +311,7 @@ def get_agent_by_id(*, agent_id: int, tenant_id: str, table_name: str) -> Option
     # 精确匹配主键 + 租户实现隔离
     sql = text(
         f"""
-        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
         FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id
         """
     )
@@ -332,7 +333,7 @@ def get_agent_by_id_any_tenant(*, agent_id: int, table_name: str) -> Optional[Di
     """
     sql = text(
         f"""
-        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
         FROM `{table_name}` WHERE id = :id
         """
     )
@@ -355,7 +356,7 @@ def get_agent_by_api_credentials_any_tenant(*, api_name: str, api_key: str, tabl
     """
     sql = text(
         f"""
-        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled
+        SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled
         FROM `{table_name}` WHERE api_name = :api_name AND api_key = :api_key
         """
     )
@@ -404,7 +405,7 @@ def create_agent(
         new_id = result.lastrowid
         ret = conn.execute(
             text(
-                f"SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
+                f"SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
             ),
             {"id": new_id, "tenant_id": tenant_id},
         ).mappings().first()
@@ -429,6 +430,7 @@ def update_agent(
         "disabled",
         "created_by_id",
         "updated_by_id",
+        "eva_version_id",
     ]
 
     sets: List[str] = []
@@ -463,7 +465,7 @@ def update_agent(
             return None
         ret = conn.execute(
             text(
-                f"SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, created_at, created_by_id, updated_at, updated_by_id, disabled FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
+                f"SELECT id, name, description, api_name, api_key, system_prompt, meta, tenant_id, eva_version_id, created_at, created_by_id, updated_at, updated_by_id, disabled FROM `{table_name}` WHERE id = :id AND tenant_id = :tenant_id"
             ),
             {"id": agent_id, "tenant_id": tenant_id},
         ).mappings().first()

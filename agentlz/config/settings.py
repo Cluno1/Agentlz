@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     model_table_name: str = Field(default="model", env="MODEL_TABLE_NAME")
     # 公告表
     announcement_table_name: str = Field(default="announcement", env="ANNOUNCEMENT_TABLE_NAME")
+    # 测评表
+    eva_json_table_name: str = Field(default="eva_json", env="EVA_JSON_TABLE_NAME")
+    eva_version_table_name: str = Field(default="eva_version", env="EVA_VERSION_TABLE_NAME")
+    eva_content_table_name: str = Field(default="eva_content", env="EVA_CONTENT_TABLE_NAME")
 
 
 

@@ -21,9 +21,9 @@ def create_upload_task(payload: Dict[str, Any]) -> Dict[str, Any]:
     sql = text(
         f"""
         INSERT INTO `{task_table}`
-        (tenant_id, user_id, filename, size, content_type, file_type, chunk_size, chunk_count, cos_key, multipart_upload_id, status, scan_status, file_hash, title, description, tags, strategy, document_type, type, document_id, expires_at)
+        (tenant_id, user_id, filename, size, content_type, file_type, chunk_size, chunk_count, cos_key, multipart_upload_id, status, scan_status, file_hash, title, description, tags, strategy, document_type, type, is_evaluation, document_id, expires_at)
         VALUES
-        (:tenant_id, :user_id, :filename, :size, :content_type, :file_type, :chunk_size, :chunk_count, :cos_key, :multipart_upload_id, :status, :scan_status, :file_hash, :title, :description, :tags, :strategy, :document_type, :type, :document_id, :expires_at)
+        (:tenant_id, :user_id, :filename, :size, :content_type, :file_type, :chunk_size, :chunk_count, :cos_key, :multipart_upload_id, :status, :scan_status, :file_hash, :title, :description, :tags, :strategy, :document_type, :type, :is_evaluation, :document_id, :expires_at)
         """
     )
     engine = get_mysql_engine()

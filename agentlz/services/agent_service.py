@@ -13,6 +13,7 @@ from agentlz.repositories import agent_mcp_repository as mcp_rel_repo
 from agentlz.repositories import agent_document_repository as doc_rel_repo
 from agentlz.repositories import mcp_repository as mcp_repo
 from agentlz.repositories import document_repository as doc_repo
+from agentlz.repositories import evaluation_repository as eva_repo
 from agentlz.services.rag.rag_service import agent_chat_get_rag
 from agentlz.repositories import record_repository as record_repo
 from langchain_core.prompts import ChatPromptTemplate
@@ -93,6 +94,58 @@ def _parse_documents_payload(payload: Dict[str, Any]) -> tuple[List[str], Dict[s
             strategy_provided.add(did)
             strategy_by_doc[did] = it.get("strategy")
     return doc_ids, strategy_by_doc, strategy_provided
+
+
+def _eva_version_table_name() -> str:
+    s = get_settings()
+    return getattr(s, "eva_version_table_name", "eva_version")
+
+
+def _build_eva_version_snapshot(agent: Dict[str, Any]) -> Dict[str, str]:
+    documents = agent.get("documents") or []
+    document_ids: List[str] = []
+    strategy_map: Dict[str, Any] = {}
+    for doc in documents:
+        did = str(doc.get("id") or "").strip()
+        if not did:
+            continue
+        if did not in document_ids:
+            document_ids.append(did)
+        strategy_map[did] = doc.get("strategy")
+    mcp_json = json.dumps(agent.get("mcp_agents") or [], ensure_ascii=False)
+    prompt = str(agent.get("system_prompt") or agent.get("prompt") or "")
+    return {
+        "prompt": prompt,
+        "document_ids_json": json.dumps(document_ids, ensure_ascii=False),
+        "strategy_json": json.dumps(strategy_map, ensure_ascii=False),
+        "mcp_json": mcp_json,
+    }
+
+
+def _create_eva_version_for_agent(
+    *,
+    agent: Dict[str, Any],
+    tenant_id: str,
+    user_id: int,
+) -> Optional[int]:
+    snapshot = _build_eva_version_snapshot(agent)
+    version_table = _eva_version_table_name()
+    version = eva_repo.create_eva_version(
+        payload={
+            "agent_id": int(agent.get("id") or 0),
+            "created_by_user_id": int(user_id),
+            "prompt": snapshot["prompt"],
+            "document_ids_json": snapshot["document_ids_json"],
+            "strategy_json": snapshot["strategy_json"],
+            "mcp_json": snapshot["mcp_json"],
+        },
+        tenant_id=str(tenant_id),
+        table_name=version_table,
+    )
+    try:
+        return int(version.get("id") or 0)
+    except Exception:
+        return None
 
 
 def _tables() -> Dict[str, str]:
@@ -219,6 +272,24 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
             {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
         )
     r["documents"] = doc_items
+    eva_version_id: Optional[int] = None
+    try:
+        eva_version_id = _create_eva_version_for_agent(agent=r, tenant_id=agent_tenant_id, user_id=uid)
+    except Exception as e:
+        logger = setup_logging()
+        logger.error(f"create_agent_service create eva_version failed agent_id={row.get('id')} error={e}")
+    if eva_version_id:
+        try:
+            repo.update_agent_no_read(
+                agent_id=int(row["id"]),
+                payload={"eva_version_id": int(eva_version_id)},
+                tenant_id=agent_tenant_id,
+                table_name=agent_table,
+            )
+            r["eva_version_id"] = int(eva_version_id)
+        except Exception as e:
+            logger = setup_logging()
+            logger.error(f"create_agent_service update eva_version_id failed agent_id={row.get('id')} error={e}")
     return r
 
 
@@ -334,6 +405,24 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
                 {"id": did, "name": str(d.get("title") or ""), "strategy": rel.get("strategy")}
             )
         r["documents"] = doc_items
+        eva_version_id: Optional[int] = None
+        try:
+            eva_version_id = _create_eva_version_for_agent(agent=r, tenant_id=str(row.get("tenant_id") or tenant_id), user_id=uid)
+        except Exception as e:
+            logger = setup_logging()
+            logger.error(f"update_agent_basic_service create eva_version failed agent_id={agent_id} error={e}")
+        if eva_version_id:
+            try:
+                repo.update_agent_no_read(
+                    agent_id=agent_id,
+                    payload={"eva_version_id": int(eva_version_id)},
+                    tenant_id=str(row.get("tenant_id") or tenant_id),
+                    table_name=agent_table,
+                )
+                r["eva_version_id"] = int(eva_version_id)
+            except Exception as e:
+                logger = setup_logging()
+                logger.error(f"update_agent_basic_service update eva_version_id failed agent_id={agent_id} error={e}")
         return r
     return None
 

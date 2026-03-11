@@ -7,6 +7,7 @@ from agentlz.schemas.document import DocumentUpdate, DocumentUpload, DocumentQue
 from agentlz.schemas.responses import Result
 from agentlz.services.rag import document_service
 from agentlz.services.rag import chunk_embeddings_service
+from agentlz.services import evaluation_service
 from agentlz.app.deps.auth_deps import require_auth, require_tenant_id, require_admin
 
 logger = setup_logging()
@@ -95,6 +96,7 @@ def create_document(
     tags: Optional[str] = Form(None),  # JSON字符串格式
     type: str = Form("self"),
     strategy: Optional[str] = Form(None),
+    is_evaluation: Optional[bool] = Form(False),
     claims: Dict[str, Any] = Depends(require_auth)
 ):
     """创建新文档（需要管理员权限）
@@ -137,6 +139,20 @@ def create_document(
     if size_bytes >= 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件超过10MB，请使用分片上传")
     
+    if is_evaluation:
+        tenant_id = require_tenant_id(request)
+        row = evaluation_service.create_evaluation_doc_service(
+            file_bytes=file_content,
+            filename=str(document.filename or ""),
+            document_type=document_type,
+            title=title,
+            description=description,
+            type=type,
+            tenant_id=tenant_id,
+            claims=claims,
+        )
+        return Result.ok(data=row)
+
     # 创建payload对象（strategy 支持JSON数组字符串，如 ["0","1"] 或 [0,1]）
     import json
     strategy_list = None

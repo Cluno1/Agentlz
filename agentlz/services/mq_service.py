@@ -10,6 +10,7 @@ import pika
 
 from agentlz.services.rag.document_service import process_document_from_cos_https
 from agentlz.services import scan_service
+from agentlz.services import evaluation_service
 from agentlz.services.cache_service import cache_get, acquire_record_zip_lock, release_record_zip_lock
 from agentlz.repositories import session_repository as sess_repo
 from agentlz.repositories import agent_repository as agent_repo
@@ -73,6 +74,8 @@ class MQService:
                 self._channel.queue_declare(queue='chat_persist_tasks', durable=True)
                 self._channel.queue_declare(queue='zip_tasks', durable=True)
                 self._channel.queue_declare(queue='doc_scan_tasks', durable=True)
+                self._channel.queue_declare(queue='eva_parse_tasks', durable=True)
+                self._channel.queue_declare(queue='eva_eval_tasks', durable=True)
                 self._channel.queue_declare(queue='zip_record_aggregate_tasks', durable=True)
                 self._channel.basic_qos(prefetch_count=1)
 
@@ -80,6 +83,8 @@ class MQService:
                 logger.info("开始监听聊天持久化任务队列...")
                 logger.info("开始监听zip任务队列...")
                 logger.info("开始监听扫描任务队列...")
+                logger.info("开始监听测评解析任务队列...")
+                logger.info("开始监听测评执行任务队列...")
                 logger.info("开始监听记录总压缩任务队列...")
 
                 # 设置消费者
@@ -101,6 +106,16 @@ class MQService:
                 self._channel.basic_consume(
                     queue='doc_scan_tasks',
                     on_message_callback=self._process_scan_task,
+                    auto_ack=False
+                )
+                self._channel.basic_consume(
+                    queue='eva_parse_tasks',
+                    on_message_callback=self._process_eva_parse_task,
+                    auto_ack=False
+                )
+                self._channel.basic_consume(
+                    queue='eva_eval_tasks',
+                    on_message_callback=self._process_eva_eval_task,
                     auto_ack=False
                 )
                 self._channel.basic_consume(
@@ -373,6 +388,7 @@ class MQService:
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 save_to_dead_letter(body, reason=str(sys_exc))
             else:
+                time.sleep(min(5, 0.5 * (2 ** retry)))
                 headers["x-retry"] = retry + 1
                 ch.basic_publish(
                     exchange="",
@@ -537,6 +553,117 @@ class MQService:
         finally:
             if record_id:
                 release_record_zip_lock(record_id=int(record_id), token=token)
+
+    def _process_eva_parse_task(self, ch, method, properties, body):
+        headers = properties.headers or {}
+        retry = int(headers.get("x-retry", 0))
+        max_retries = self.settings.rabbitmq_max_retries
+        eva_doc_id = None
+        tenant_id = None
+        try:
+            logger.info(
+                f"eva_parse_tasks 收到消息 delivery_tag={getattr(method, 'delivery_tag', None)} redelivered={getattr(method, 'redelivered', None)} retry={retry}/{max_retries} body_len={len(body or b'')}"
+            )
+            message = json.loads(body.decode("utf-8"))
+            eva_doc_id = message.get("eva_doc_id")
+            tenant_id = message.get("tenant_id")
+            if not eva_doc_id or not tenant_id:
+                raise BizError("消息格式不完整，缺少必要字段")
+            logger.info(f"eva_parse_tasks 开始处理 eva_doc_id={eva_doc_id} tenant_id={tenant_id} retry={retry}/{max_retries}")
+            evaluation_service.parse_evaluation_doc_task(eva_doc_id=str(eva_doc_id), tenant_id=str(tenant_id))
+            logger.info(f"eva_parse_tasks 处理成功 eva_doc_id={eva_doc_id} tenant_id={tenant_id}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except BizError as biz:
+            logger.error(f"eva_parse_tasks 业务异常，丢弃消息 eva_doc_id={eva_doc_id} tenant_id={tenant_id} err={biz}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            save_to_dead_letter(body, reason=str(biz))
+        except Exception as sys_exc:
+            if retry >= max_retries:
+                logger.exception(
+                    f"eva_parse_tasks 系统异常且已达最大重试次数[{max_retries}]，丢弃消息 eva_doc_id={eva_doc_id} tenant_id={tenant_id} err={sys_exc}"
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                save_to_dead_letter(body, reason=str(sys_exc))
+            else:
+                delay = min(5.0, 0.5 * (2 ** retry))
+                logger.exception(
+                    f"eva_parse_tasks 系统异常，将重试 eva_doc_id={eva_doc_id} tenant_id={tenant_id} retry={retry}/{max_retries} next_retry={retry + 1} delay_s={delay} err={sys_exc}"
+                )
+                time.sleep(delay)
+                headers["x-retry"] = retry + 1
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=method.routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(headers=headers),
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    def _process_eva_eval_task(self, ch, method, properties, body):
+        """
+        处理测评执行队列消息（eva_eval_tasks）。
+
+        参数：
+        - ch/method/properties/body：RabbitMQ 消费回调标准参数。
+
+        返回：
+        - 无；通过 ack/retry 控制消息生命周期。
+
+        说明：
+        - 新版消息字段：eva_json_id、eva_version_id、eva_content_id、agent_id、tenant_id、user_id、offset、batch_size。
+        - 兼容旧字段：eva_doc_id（将被映射为 eva_json_id）。
+        """
+        headers = properties.headers or {}
+        retry = int(headers.get("x-retry", 0))
+        max_retries = self.settings.rabbitmq_max_retries
+        try:
+            message = json.loads(body.decode("utf-8"))
+            eva_json_id = message.get("eva_json_id") or message.get("eva_doc_id")
+            eva_version_id = message.get("eva_version_id")
+            eva_content_id = message.get("eva_content_id")
+            agent_id = message.get("agent_id")
+            tenant_id = message.get("tenant_id")
+            user_id = message.get("user_id")
+            offset = message.get("offset", 0)
+            batch_size = message.get("batch_size", 10)
+            if (
+                not eva_json_id
+                or not eva_version_id
+                or not eva_content_id
+                or not agent_id
+                or not tenant_id
+                or not user_id
+            ):
+                raise BizError("消息格式不完整，缺少必要字段")
+            evaluation_service.process_evaluation_task(
+                eva_json_id=str(eva_json_id),
+                eva_version_id=int(eva_version_id),
+                eva_content_id=int(eva_content_id),
+                agent_id=int(agent_id),
+                tenant_id=str(tenant_id),
+                user_id=str(user_id),
+                offset=int(offset or 0),
+                batch_size=int(batch_size or 10),
+            )
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except BizError as biz:
+            logger.error(f"业务异常，丢弃消息: {biz}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            save_to_dead_letter(body, reason=str(biz))
+        except Exception as sys_exc:
+            if retry >= max_retries:
+                logger.error(f"已达最大重试次数[{max_retries}]，丢弃消息")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                save_to_dead_letter(body, reason=str(sys_exc))
+            else:
+                headers["x-retry"] = retry + 1
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=method.routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(headers=headers),
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
 
     def _process_scan_task(self, ch, method, properties, body):
         headers = properties.headers or {}

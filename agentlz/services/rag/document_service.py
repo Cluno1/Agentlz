@@ -1039,6 +1039,8 @@ def process_document_from_cos_https(
     - 转换后的Markdown文本。
     """
 
+    ori_url = ""
+    stage = "init"
     try:
         table_name, _ = _get_table_and_header()
         row = repo.get_document_by_id(doc_id=doc_id, tenant_id=tenant_id, table_name=table_name)
@@ -1072,10 +1074,12 @@ def process_document_from_cos_https(
                 logger.info(f"隔离对象已自动转正 doc_id={doc_id} new_key={new_key}")
             except Exception as e:
                 raise Exception(f"对象仍在隔离区且自动转正失败: {e}")
+        stage = "resolve_origin_url"
         ori_url = get_origin_url_from_save_https(save_https)
         logger.info(f"文档 {save_https} 转换为原始URL: {ori_url}")
         import requests
 
+        stage = "head_check"
         response = requests.head(ori_url, timeout=10)
         if response.status_code != 200:
             raise Exception(f"文件无法访问，HTTP状态码: {response.status_code}")
@@ -1086,6 +1090,7 @@ def process_document_from_cos_https(
         # 第一部分 解析 文档内容
 
         # 确定文件扩展名
+        stage = "convert_to_markdown"
         doc_type_norm = str(document_type or "").lower().strip()
         forced_ext = ext_map.get(doc_type_norm)
 
@@ -1234,30 +1239,50 @@ def process_document_from_cos_https(
                 except Exception:
                     pass
 
-        if doc_type_norm == "md":
-            get_resp = requests.get(ori_url, timeout=30)
-            get_resp.raise_for_status()
-            text_content = get_resp.text
-        elif doc_type_norm == "txt":
-            get_resp = requests.get(ori_url, timeout=30)
-            get_resp.raise_for_status()
-            raw_text = get_resp.text
-            normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
-            import re
-            text_content = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", normalized).strip()
-        elif forced_ext == ".ppt":
-            text_content = _convert_legacy_ppt_to_markdown()
-        elif forced_ext == ".doc":
-            text_content = _convert_legacy_doc_to_markdown()
-        else:
-            if forced_ext:
-                result = MarkItDown().convert(ori_url, file_extension=forced_ext)
+        try:
+            if doc_type_norm == "md":
+                get_resp = requests.get(ori_url, timeout=30)
+                get_resp.raise_for_status()
+                text_content = get_resp.text
+            elif doc_type_norm == "txt":
+                get_resp = requests.get(ori_url, timeout=30)
+                get_resp.raise_for_status()
+                raw_text = get_resp.text
+                normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+                import re
+                text_content = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", normalized).strip()
+            elif forced_ext == ".ppt":
+                text_content = _convert_legacy_ppt_to_markdown()
+            elif forced_ext == ".doc":
+                text_content = _convert_legacy_doc_to_markdown()
             else:
-                result = MarkItDown().convert(ori_url)
-            text_content = result.text_content
+                if forced_ext:
+                    result = MarkItDown().convert(ori_url, file_extension=forced_ext)
+                else:
+                    result = MarkItDown().convert(ori_url)
+                text_content = result.text_content
+        except Exception as e:
+            logger.error(f"文档 {doc_id} 转换为Markdown失败: {e} (origin_url={ori_url})")
+            try:
+                msg = str(e)
+                if "soffice_not_found" in msg:
+                    logger.error(
+                        "缺少 LibreOffice/soffice，安装后支持 .ppt 转换：brew install --cask libreoffice；或将 .ppt 转为 .pptx 后再上传"
+                    )
+            except Exception:
+                pass
+            table_name, _ = _get_table_and_header()
+            repo.update_document(
+                doc_id=doc_id,
+                payload={"status": "NEED_RECHUNK"},
+                tenant_id=tenant_id,
+                table_name=table_name,
+            )
+            return ""
 
         logger.info(f"文档 {doc_id} 转换为Markdown内容，长度: {len(text_content)} 字符")
         table_name, _ = _get_table_and_header()
+        stage = "save_markdown"
         repo.update_document(
             doc_id=doc_id,
             payload={"content": text_content, "status": "success"},
@@ -1266,9 +1291,11 @@ def process_document_from_cos_https(
         )
 
         # 第二部分 切割为Markdown块 可选策略 数字, 如: 0-n, 数字代表不同策略
+        stage = "chunk_markdown"
         chunks = chunk_content_by_strategy(text_content, strategy)
 
         index = 0
+        stage = "create_embeddings"
         for chunk in chunks:
             index += 1
             logger.info(
@@ -1285,15 +1312,17 @@ def process_document_from_cos_https(
             )
         return ""
     except Exception as e:
-        logger.error(f"文档 {doc_id} ,原始URL: {ori_url} 转换为Markdown失败: {e}")
-        try:
-            msg = str(e)
-            if "soffice_not_found" in msg:
-                logger.error(
-                    "缺少 LibreOffice/soffice，安装后支持 .ppt 转换：brew install --cask libreoffice；或将 .ppt 转为 .pptx 后再上传"
-                )
-        except Exception:
-            pass
+        if stage == "create_embeddings":
+            logger.error(f"文档 {doc_id} 向量化失败: {e} (origin_url={ori_url}, strategy={strategy})")
+            table_name, _ = _get_table_and_header()
+            repo.update_document(
+                doc_id=doc_id,
+                payload={"status": "NEED_EMBEDDING"},
+                tenant_id=tenant_id,
+                table_name=table_name,
+            )
+            return ""
+        logger.error(f"文档 {doc_id} 解析失败 stage={stage}: {e} (origin_url={ori_url}, strategy={strategy})")
         table_name, _ = _get_table_and_header()
         repo.update_document(
             doc_id=doc_id,

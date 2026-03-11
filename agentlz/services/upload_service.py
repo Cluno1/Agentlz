@@ -24,6 +24,7 @@ from agentlz.config.settings import get_settings
 from agentlz.core.external_services import publish_to_rabbitmq
 from agentlz.repositories import upload_repository as upload_repo
 from agentlz.repositories import document_repository as doc_repo
+from agentlz.repositories import evaluation_repository as eva_repo
 from agentlz.repositories import user_doc_perm_repository as perm_repo
 from agentlz.services.cos_service import (
     create_multipart_upload,
@@ -83,10 +84,11 @@ def init_upload(*, payload: Dict[str, Any], tenant_id: str, user_id: int) -> Dic
     - 新任务：{"task_id":...,"cos_key":...,"upload_id":...,"chunk_size":...,"chunk_count":...,"status":"uploading"}
     """
     file_hash = payload.get("file_hash")
+    is_evaluation = bool(payload.get("is_evaluation"))
     size = int(payload.get("size") or 0)
     doc_tenant_id = _resolve_doc_tenant(str(payload.get("type") or "self"), tenant_id)
     logger.debug(f"初始化上传 tenant_id={tenant_id} user_id={user_id} size={size} filename={payload.get('filename')} file_type={payload.get('file_type')} file_hash={file_hash}")
-    if file_hash and size > 0:
+    if file_hash and size > 0 and not is_evaluation:
         fp = upload_repo.get_fingerprint(
             tenant_id=doc_tenant_id, file_hash=str(file_hash), size=size
         )
@@ -127,6 +129,7 @@ def init_upload(*, payload: Dict[str, Any], tenant_id: str, user_id: int) -> Dic
             ),
             "document_type": payload.get("document_type"),
             "type": payload.get("type") or "self",
+            "is_evaluation": 1 if is_evaluation else 0,
             "document_id": None,
             "expires_at": expires_at,
         }
@@ -223,6 +226,22 @@ def _create_document_for_upload_task(task: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _create_evaluation_doc_for_upload_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    tenant_id = str(task.get("tenant_id") or "default")
+    save_https = document_service.build_save_https(str(task.get("cos_key") or ""))
+    payload = {
+        "filename": task.get("filename") or "",
+        "title": task.get("title") or task.get("filename"),
+        "description": task.get("description") or "",
+        "size": int(task.get("size") or 0),
+        "document_type": str(task.get("document_type") or "xlsx"),
+        "save_https": save_https,
+        "uploaded_by_user_id": int(task.get("user_id") or 0),
+        "status": "pending_scan",
+    }
+    return eva_repo.create_eva_doc(payload=payload, tenant_id=tenant_id, table_name="eva_doc")
+
+
 def complete_upload(
     *, task_id: int, tenant_id: str, user_id: int, parts: List[Dict[str, Any]], file_hash: Optional[str]
 ) -> Dict[str, Any]:
@@ -261,7 +280,8 @@ def complete_upload(
         upload_id=str(task.get("multipart_upload_id")),
         parts=complete_parts,
     )
-    doc_row = _create_document_for_upload_task(task)
+    is_evaluation = bool(int(task.get("is_evaluation") or 0))
+    doc_row = _create_evaluation_doc_for_upload_task(task) if is_evaluation else _create_document_for_upload_task(task)
     upload_repo.update_upload_task(
         task_id=task_id,
         payload={"status": "completed", "document_id": doc_row.get("id"), "file_hash": file_hash or task.get("file_hash")},

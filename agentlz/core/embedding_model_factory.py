@@ -1,5 +1,6 @@
 
 from typing import Optional
+import threading
 
 from agentlz.config.settings import get_settings
 from agentlz.core.logger import setup_logging
@@ -16,6 +17,9 @@ except Exception:
     except Exception:
         HuggingFaceEmbeddings = None  # 延迟到运行时检查
 
+
+
+_HF_EMBEDDINGS_INIT_LOCK = threading.Lock()
 
 
 def get_hf_embeddings(
@@ -57,17 +61,10 @@ def get_hf_embeddings(
 
     logger.info(f"加载 Embeddings 模型: {name} (device={device or 'auto'})")
     
-    # 创建基础嵌入模型
-    base_embeddings = HuggingFaceEmbeddings(
-        model_name=name,
-        model_kwargs=model_kwargs if model_kwargs else {},
-        encode_kwargs=encode_kwargs,
-    )
-    
-    # 使用维度扩展包装器，将512维扩展到1536维
-    extended_embeddings = DimensionExtendedEmbeddings(
-        base_embeddings=base_embeddings,
-        target_dimension=1536
-    )
-    
-    return extended_embeddings
+    with _HF_EMBEDDINGS_INIT_LOCK:
+        base_embeddings = HuggingFaceEmbeddings(
+            model_name=name,
+            model_kwargs=model_kwargs if model_kwargs else {},
+            encode_kwargs=encode_kwargs,
+        )
+        return DimensionExtendedEmbeddings(base_embeddings=base_embeddings, target_dimension=1536)

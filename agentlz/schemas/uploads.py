@@ -15,6 +15,7 @@ class UploadInitRequest(BaseModel):
     tags: Optional[List[str]] = None
     strategy: Optional[List[str]] = None
     document_type: Optional[str] = None
+    is_evaluation: Optional[bool] = None
 
 
 class UploadInitResponse(BaseModel):
