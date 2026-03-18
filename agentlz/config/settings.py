@@ -165,11 +165,11 @@ class Settings(BaseSettings):
     server_port: int = Field(default=8000, env="SERVER_PORT")
 
     # RAG 多链路召回配置
-    rag_vector_top_k: int = Field(default=50, env="RAG_VECTOR_TOP_K")
-    rag_bm25_top_k: int = Field(default=50, env="RAG_BM25_TOP_K")
-    rag_final_top_k: int = Field(default=20, env="RAG_FINAL_TOP_K")
+    rag_vector_top_k: int = Field(default=3, env="RAG_VECTOR_TOP_K")
+    rag_bm25_top_k: int = Field(default=3, env="RAG_BM25_TOP_K")
+    rag_final_top_k: int = Field(default=3, env="RAG_FINAL_TOP_K")
     rag_bm25_enabled: bool = Field(default=True, env="RAG_BM25_ENABLED")
-    rag_rerank_enabled: bool = Field(default=True, env="RAG_RERANK_ENABLED")
+    rag_rerank_enabled: bool = Field(default=False, env="RAG_RERANK_ENABLED")
     rag_rerank_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2", env="RAG_RERANK_MODEL")
 
 def get_settings() -> Settings:

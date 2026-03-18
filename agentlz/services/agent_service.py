@@ -1,5 +1,7 @@
 from __future__ import annotations
 import queue
+import threading
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple, Iterator
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -1081,37 +1083,80 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, is_observation: bo
         settings_local = settings
         FLUSH_MS = float(getattr(settings_local, "sse_flush_ms", 0.08) or 0.08)
         MAX_BUF = int(getattr(settings_local, "sse_max_buf", 64) or 64)
-        # 计算输入文本与开始时间（用于观测指标）
         model_start = time.time()
+        first_char_time_ms: Optional[int] = None
+        first_frame_sent = False
         input_text_for_tokens = f"{system_prompt_text}\n用户问题：{str(out.get('message') or '')}\n历史上下文：\n{str(out.get('history') or '')}\n候选文档：\n{str(out.get('doc') or '')}"
-        input_tokens_est = max(1, int(len(input_text_for_tokens) / 4))  # 简单估算：平均 4 字符 ≈ 1 token
+        input_tokens_est = max(1, int(len(input_text_for_tokens) / 4))
         try:
             yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
         except Exception:
             yield f"data: {json.dumps({'record_id': record_id})}\n\n"
-        try:
-            for chunk in chain.stream({
-                "message": str(out.get("message") or ""),
-                "doc": str(out.get("doc") or ""),
-                "history": str(out.get("history") or ""),
-            }):
+
+        # 使用 LangChain 的 astream 在单独事件循环中异步拉取模型增量结果，通过线程安全队列传递给同步生成器
+        q_stream: "queue.Queue[Optional[Any]]" = queue.Queue()
+
+        def _worker() -> None:
+            """
+            后台线程：创建新的事件循环，使用 chain.astream 异步消费模型流，并将内容写入线程安全队列。
+            """
+            async def _runner() -> None:
                 try:
-                    content = getattr(chunk, "content", str(chunk))
-                except Exception:
-                    content = str(chunk)
-                if content:
-                    acc += content
-                    buf += content
-                    now = time.time()
-                    should_flush = (len(buf) >= MAX_BUF) or ("\n" in content) or ((now - last_emit) >= FLUSH_MS)
-                    if should_flush and buf.strip() != "":
-                        lines = buf.split("\n")
-                        frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
-                        yield frame
-                        buf = ""
-                        last_emit = now
-        except Exception:
-            yield "data: 服务暂时不可用，请稍后重试\n\n"
+                    async for chunk in chain.astream({
+                        "message": str(out.get("message") or ""),
+                        "doc": str(out.get("doc") or ""),
+                        "history": str(out.get("history") or ""),
+                    }):
+                        try:
+                            content = getattr(chunk, "content", str(chunk))
+                        except Exception:
+                            content = str(chunk)
+                        if not content:
+                            continue
+                        q_stream.put(content)
+                except Exception as e:
+                    # 发生异常时，向队列写入错误信息，便于主线程统一返回错误提示
+                    q_stream.put({"error": str(e)})
+                finally:
+                    # 使用 None 作为结束标记，通知消费方可以停止读取
+                    q_stream.put(None)
+
+            try:
+                asyncio.run(_runner())
+            except Exception as e:
+                q_stream.put({"error": str(e)})
+                q_stream.put(None)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        # 主线程从队列中消费纯文本增量，负责缓冲拆帧与 SSE 输出，行为与原先保持一致
+        while True:
+            item = q_stream.get()
+            if item is None:
+                break
+            if isinstance(item, dict) and "error" in item:
+                yield "data: 服务暂时不可用，请稍后重试\n\n"
+                continue
+            content = str(item)
+            if content:
+                acc += content
+                buf += content
+                now = time.time()
+                should_flush = (len(buf) >= MAX_BUF) or ("\n" in content) or ((now - last_emit) >= FLUSH_MS)
+                if should_flush and buf.strip() != "":
+                    if not first_frame_sent:
+                        try:
+                            first_char_time_ms = int((now - model_start) * 1000)
+                        except Exception:
+                            first_char_time_ms = None
+                        first_frame_sent = True
+                    lines = buf.split("\n")
+                    frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
+                    yield frame
+                    buf = ""
+                    last_emit = now
+
         if buf.strip() != "":
             lines = buf.split("\n")
             frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
@@ -1120,6 +1165,11 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, is_observation: bo
         model_end = time.time()
         output_tokens_est = max(1, int(len(acc) / 4))
         model_time_ms = int((model_end - model_start) * 1000)
+        if first_char_time_ms is None:
+            try:
+                first_char_time_ms = int(model_time_ms)
+            except Exception:
+                first_char_time_ms = None
         # 提取模型名（不同版本属性名不同，尽量兼容）
         try:
             model_name = getattr(llm, "model_name", None) or getattr(llm, "model", None) or ""
@@ -1177,6 +1227,7 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, is_observation: bo
                     "input_tokens": int(input_tokens_est),
                     "output_tokens": int(output_tokens_est),
                     "model_name": str(model_name or ""),
+                    "first_char_time_ms": int(first_char_time_ms) if first_char_time_ms is not None else int(model_time_ms),
                 },
                 is_observation=bool(is_observation),
             )

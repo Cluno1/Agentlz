@@ -872,6 +872,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
             
             # 阶段6：使用优化后的短句数组执行文档检索，获取 TopK 文档
             logger.debug(f"继续 [agent_chat_get_rag] 开始[get_doc_topk_multi] 优化后的messages={optimized_msgs}")
+            # 多链路召回
             rag = get_doc_topk_multi(agent_id=int(agent_id), message=message, messages=optimized_msgs)
             
         
