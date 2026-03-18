@@ -895,7 +895,69 @@ def _maybe_publish_record_aggregate(*, agent_id: int, record_id: int, threshold:
         pass
 
 
-def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+
+
+# 观测模式函数: 
+def observation_push(
+    *,
+    agent_id: int,
+    record_id: int,
+    out: Dict[str, Any],
+    meta: Optional[Dict[str, Any]] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    is_observation: bool = False,
+) -> None:
+    """
+    观测模式：通过 WebSocket 将 RAG/模型阶段数据推送给指定用户
+    - 当 is_observation 为 True 且 meta 中包含 tenant_id 与 user_id 时进行推送
+    - 推送统一结构：
+      type: rag.observation
+      topic: rag.observation:user:{user_id}
+      data: { agent_id, record_id, doc, history, message, messages, metrics? }
+    """
+    logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    logger.debug(f"进入 [observation_push] agent_id={agent_id} record_id={record_id} is_observation={is_observation}")
+    try:
+        if not bool(is_observation):
+            return
+        from agentlz.core.ws_manager import get_ws_manager
+        ws = get_ws_manager()
+        tenant_id = None
+        user_id = None
+        if isinstance(meta, dict):
+            tid = str(meta.get("tenant_id") or "").strip()
+            uid = str(meta.get("user_id") or "").strip()
+            tenant_id = tid or None
+            user_id = uid or None
+        if tenant_id and user_id:
+            data: Dict[str, Any] = {
+                "agent_id": int(agent_id),
+                "record_id": int(out.get("record_id") or record_id),
+                "doc": str(out.get("doc") or ""),
+                "history": str(out.get("history") or ""),
+                "message": str(out.get("message") or ""),
+                "messages": out.get("messages") or [],
+            }
+            # 可选指标信息（RAG耗时/模型耗时/输入输出 token 估算/模型名）
+            if isinstance(metrics, dict) and metrics:
+                data["metrics"] = metrics
+            payload = {
+                "type": "rag.observation",
+                "topic": f"rag.observation:user:{user_id}",
+                "data": data,
+            }
+            logger.debug(f"观测模式推送数据 payload={payload}")
+            fut = ws.submit(ws.send_to_user(str(tenant_id), str(user_id), payload))
+            if fut is None:
+                # 若当前无事件循环，则忽略（例如后端未启动 WS 服务）
+                pass
+        else:
+            logger.debug("观测模式开启，但 meta 中缺少 tenant_id 或 user_id，跳过 WebSocket 发送")
+    except Exception:
+        logger.debug("观测模式发送失败，继续主流程")
+        
+
+def agent_llm_answer_stream(*, agent_id: int, record_id: int, is_observation: bool = False, out: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Iterator[str]:
     """
     LLM 简单回答流式生成器（Answer 版）
     参数：
@@ -1011,7 +1073,7 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
             logger.debug(f"完成 [agent_llm_answer_stream] record_id={record_id}")
         return _fallback()
     chain = prompt | llm
-
+    # 记录大模型开始结束时间与输入/输出 token 估算，并通过观测模式推送
     def _gen() -> Iterator[str]:
         acc = ""
         buf = ""
@@ -1019,6 +1081,10 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
         settings_local = settings
         FLUSH_MS = float(getattr(settings_local, "sse_flush_ms", 0.08) or 0.08)
         MAX_BUF = int(getattr(settings_local, "sse_max_buf", 64) or 64)
+        # 计算输入文本与开始时间（用于观测指标）
+        model_start = time.time()
+        input_text_for_tokens = f"{system_prompt_text}\n用户问题：{str(out.get('message') or '')}\n历史上下文：\n{str(out.get('history') or '')}\n候选文档：\n{str(out.get('doc') or '')}"
+        input_tokens_est = max(1, int(len(input_text_for_tokens) / 4))  # 简单估算：平均 4 字符 ≈ 1 token
         try:
             yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
         except Exception:
@@ -1050,6 +1116,15 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
             lines = buf.split("\n")
             frame = "".join([f"data: {ln}\n" for ln in lines]) + "\n"
             yield frame
+        # 结束时间与输出 token 估算
+        model_end = time.time()
+        output_tokens_est = max(1, int(len(acc) / 4))
+        model_time_ms = int((model_end - model_start) * 1000)
+        # 提取模型名（不同版本属性名不同，尽量兼容）
+        try:
+            model_name = getattr(llm, "model_name", None) or getattr(llm, "model", None) or ""
+        except Exception:
+            model_name = ""
         try:
             request_id = None
             if isinstance(meta, dict):
@@ -1088,6 +1163,23 @@ def agent_llm_answer_stream(*, agent_id: int, record_id: int, out: Dict[str, Any
                     _maybe_publish_record_aggregate(agent_id=int(agent_id), record_id=int(record_id))
                 else:
                     chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
+        except Exception:
+            pass
+        # 观测模式：推送模型阶段指标
+        try:
+            observation_push(
+                agent_id=int(agent_id),
+                record_id=int(record_id),
+                out=out,
+                meta=meta,
+                metrics={
+                    "model_time_ms": int(model_time_ms),
+                    "input_tokens": int(input_tokens_est),
+                    "output_tokens": int(output_tokens_est),
+                    "model_name": str(model_name or ""),
+                },
+                is_observation=bool(is_observation),
+            )
         except Exception:
             pass
         yield "data: [DONE]\n\n"
@@ -1252,6 +1344,8 @@ def agent_llm_exe_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], 
             break
         yield frame
 
+        
+
 def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta: Optional[Dict[str, Any]] = None, is_observation: bool = False) -> Iterator[str]:
     '''
     处理单轮对话请求，返回流式响应。
@@ -1266,7 +1360,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
         Iterator[str]: 流式响应的迭代器。
     '''
     logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
-    logger.debug(f"进入 [agent_chat_service] agent_id={agent_id} record_id={record_id}")
+    logger.debug(f"进入 [agent_chat_service] 专门debug: is_observation={is_observation}")
     req_id = None
     try:
         if isinstance(meta, dict):
@@ -1305,36 +1399,27 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
             meta_for_record = {k: v for k, v in meta.items() if k != "request_id"}
     except Exception:
         meta_for_record = meta
+        
+    # 观测模式
+    if bool(is_observation):
+        logger.debug(f"观测模式开启，record_id={record_id}")
+    # 记录 RAG 开始/结束时间，并推送观测信息
+    rag_start = time.time()
     out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
-    # 观测模式：将RAG输出通过WebSocket推送给该用户
+    rag_end = time.time()
+    rag_time_ms = int((rag_end - rag_start) * 1000)
     try:
-        if bool(is_observation):
-            from agentlz.core.ws_manager import get_ws_manager
-            ws = get_ws_manager()
-            tenant_id = None
-            user_id = None
-            if isinstance(meta, dict):
-                tid = str(meta.get("tenant_id") or "").strip()
-                uid = str(meta.get("user_id") or "").strip()
-                tenant_id = tid or None
-                user_id = uid or None
-            if tenant_id and user_id:
-                payload = {
-                    "event": "rag.observation",
-                    "agent_id": int(agent_id),
-                    "record_id": int(out.get("record_id") or record_id),
-                    "doc": str(out.get("doc") or ""),
-                    "history": str(out.get("history") or ""),
-                    "message": str(out.get("message") or ""),
-                    "messages": out.get("messages") or [],
-                }
-                fut = ws.submit(ws.send_to_user(str(tenant_id), str(user_id), payload))
-                if fut is None:
-                    pass
-            else:
-                logger.debug("观测模式开启，但 meta 中缺少 tenant_id 或 user_id，跳过 WebSocket 发送")
+        observation_push(
+            agent_id=int(agent_id),
+            record_id=int(record_id),
+            out=out,
+            meta=meta,
+            metrics={"rag_time_ms": int(rag_time_ms)},
+            is_observation=bool(is_observation),
+        )
     except Exception:
-        logger.debug("观测模式发送失败，继续主流程")
+        pass
+    
     try:
         record_id = int(out.get("record_id") or record_id)
     except Exception:
@@ -1376,7 +1461,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
                     yield frame
                 yield "data: [DONE]\n\n"
                 return
-            yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
+            yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)
         finally:
             if locked and lock_record_id is not None:
                 release_chat_lock(record_id=int(lock_record_id), token=str(req_id))

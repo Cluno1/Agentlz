@@ -740,7 +740,7 @@ def agent_chat_get_rag(*, agent_id: int, message: str, record_id: int=-1, meta: 
 
         his_parts: List[str] = []
         if summary_zip:
-            his_parts.append(f"【历史摘要（截至第{summary_until}轮）】\n{summary_zip}\n")
+            his_parts.append(f"【历史摘要】\n{summary_zip}\n")
         recent_lines: List[str] = []
         for idx, it in enumerate(history, start=1):
             count_val = it.get("count")

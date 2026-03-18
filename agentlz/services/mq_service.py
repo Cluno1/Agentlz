@@ -435,6 +435,7 @@ class MQService:
             if rec_row:
                 try:
                     summary_until = int(rec_row.get("summary_until_session_id") or 0)
+                    logger.debug(f"!!!!当前记录摘要截止会话ID: {summary_until}")
                 except Exception:
                     summary_until = 0
                 summary_zip = str(rec_row.get("summary_zip") or "").strip()
