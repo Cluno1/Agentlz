@@ -21,12 +21,75 @@ from agentlz.repositories import record_repository as record_repo
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model, get_model_by_name
 from agentlz.prompts.rag.rag import RAG_ANSWER_SYSTEM_PROMPT
+from agentlz.agents.tools.judge_chat_or_exe_agent import classify_chat_or_exe_intent
 import uuid
 import json
 import time
 from agentlz.services.cache_service import acquire_chat_lock, release_chat_lock, cache_set, chat_history_append, chat_history_set_item
 from agentlz.core.external_services import publish_to_rabbitmq
 from agentlz.repositories import session_repository as sess_repo
+
+
+def _decide_stream_mode(
+    *,
+    agent_id: int,
+    message: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str, Optional[str], Dict[str, Any]]:
+    logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    meta_stream_raw: Optional[str] = None
+    intent_result: Dict[str, Any] = {}
+    stream_mode = "chat"
+    decision_source = "meta"
+    agent_desc = ""
+    try:
+        agent_row = repo.get_agent_by_id_any_tenant(agent_id=int(agent_id), table_name=_tables()["agent"])
+    except Exception:
+        agent_row = None
+    meta_conf: Optional[Dict[str, Any]] = None
+    if agent_row:
+        m = agent_row.get("meta")
+        if isinstance(m, str):
+            try:
+                m = json.loads(m)
+            except Exception:
+                m = None
+        if isinstance(m, dict):
+            meta_conf = m
+        agent_desc = str(agent_row.get("description") or "")
+    raw = None
+    if isinstance(meta_conf, dict):
+        raw = meta_conf.get("stream")
+    if isinstance(raw, str):
+        raw = raw.strip().lower()
+    elif raw is not None:
+        raw = str(raw).strip().lower()
+    if raw not in ("chat", "exe", "auto"):
+        raw = "auto"
+    meta_stream_raw = raw
+    if raw in ("chat", "exe"):
+        stream_mode = raw
+        decision_source = "meta"
+    else:
+        decision_source = "auto"
+        intent, confidence, reason = classify_chat_or_exe_intent(message, agent_desc)
+        intent_result = {
+            "intent": intent,
+            "confidence": confidence,
+            "reason": reason,
+        }
+        if intent == "exe" and confidence >= 0.7:
+            stream_mode = "exe"
+        else:
+            stream_mode = "chat"
+    logger.debug(
+        f"stream routing decision agent_id={agent_id} stream_meta={meta_stream_raw} "
+        f"mode={stream_mode} decision_source={decision_source} intent={intent_result}"
+    )
+    if isinstance(meta, dict):
+        meta["stream_mode"] = stream_mode
+        meta["stream_decision_source"] = decision_source
+    return stream_mode, decision_source, meta_stream_raw, intent_result
 
 
 def _ensure_authenticated(claims: Optional[Dict[str, Any]]) -> None:
@@ -940,7 +1003,28 @@ def observation_push(
                 "message": str(out.get("message") or ""),
                 "messages": out.get("messages") or [],
             }
-            # 可选指标信息（RAG耗时/模型耗时/输入输出 token 估算/模型名）
+            stream_mode = None
+            stream_decision_source = None
+            if isinstance(meta, dict):
+                sm = meta.get("stream_mode")
+                ds = meta.get("stream_decision_source")
+                if isinstance(sm, str) and sm.strip():
+                    stream_mode = sm.strip()
+                if isinstance(ds, str) and ds.strip():
+                    stream_decision_source = ds.strip()
+            if isinstance(metrics, dict):
+                if "stream_mode" in metrics and not stream_mode:
+                    sm2 = metrics.get("stream_mode")
+                    if isinstance(sm2, str) and sm2.strip():
+                        stream_mode = sm2.strip()
+                if "stream_decision_source" in metrics and not stream_decision_source:
+                    ds2 = metrics.get("stream_decision_source")
+                    if isinstance(ds2, str) and ds2.strip():
+                        stream_decision_source = ds2.strip()
+            if stream_mode:
+                data["stream_mode"] = stream_mode
+            if stream_decision_source:
+                data["stream_decision_source"] = stream_decision_source
             if isinstance(metrics, dict) and metrics:
                 data["metrics"] = metrics
             payload = {
@@ -1444,6 +1528,22 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
         if not locked:
             return _busy_reply(int(lock_record_id))
 
+    stream_mode = "chat"
+    stream_decision_source = "meta"
+    meta_stream_raw: Optional[str] = None
+    intent_info: Dict[str, Any] = {}
+    try:
+        stream_mode, stream_decision_source, meta_stream_raw, intent_info = _decide_stream_mode(
+            agent_id=int(agent_id),
+            message=str(message or ""),
+            meta=meta,
+        )
+    except Exception:
+        stream_mode = "chat"
+        stream_decision_source = "fallback"
+        meta_stream_raw = None
+        intent_info = {}
+
     meta_for_record = meta
     try:
         if isinstance(meta, dict) and "request_id" in meta:
@@ -1465,7 +1565,11 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
             record_id=int(record_id),
             out=out,
             meta=meta,
-            metrics={"rag_time_ms": int(rag_time_ms)},
+            metrics={
+                "rag_time_ms": int(rag_time_ms),
+                "stream_mode": stream_mode,
+                "stream_decision_source": stream_decision_source,
+            },
             is_observation=bool(is_observation),
         )
     except Exception:
@@ -1487,6 +1591,11 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
     def _wrap() -> Iterator[str]:
         try:
             try:
+                logger.debug(
+                    f"stream routing in chat_service agent_id={agent_id} record_id={record_id} "
+                    f"request_id={req_id} meta_stream={meta_stream_raw} "
+                    f"stream_mode={stream_mode} decision_source={stream_decision_source} intent={intent_info}"
+                )
                 s = get_settings()
                 sess_table = getattr(s, "session_table_name", "session")
                 existed = sess_repo.get_session_by_request_id(request_id=str(req_id), table_name=sess_table)
@@ -1512,7 +1621,10 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
                     yield frame
                 yield "data: [DONE]\n\n"
                 return
-            yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)
+            if stream_mode == "exe":
+                yield from agent_llm_exe_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
+            else:
+                yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)
         finally:
             if locked and lock_record_id is not None:
                 release_chat_lock(record_id=int(lock_record_id), token=str(req_id))
