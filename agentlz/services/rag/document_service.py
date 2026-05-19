@@ -1315,7 +1315,7 @@ def process_document_from_cos_https(
             )
             create_chunk_embedding_service(
                 tenant_id=tenant_id,
-                chunk_id=f"{doc_id}_{index}",
+                chunk_id=f"{doc_id}_{strategy}_{index}",
                 doc_id=doc_id,
                 content=chunk,
                 chunk_index=index,
