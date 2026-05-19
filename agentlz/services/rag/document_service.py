@@ -966,6 +966,8 @@ def publish_document_chunk_tasks_service(
         raise HTTPException(
             status_code=400, detail="文档未保存有效的资源链接(save_https)"
         )
+    # P1: 作用域取自文档自身（非调用者会话租户），避免跨租户静默吞
+    doc_tenant_id = str(row.get("tenant_id") or tenant_id)
 
     # 策略列表清洗：仅保留非负整数
     cleaned: List[int] = []
@@ -991,7 +993,7 @@ def publish_document_chunk_tasks_service(
             "doc_id": doc_id,
             "save_https": save_https,
             "document_type": doc_type,
-            "tenant_id": tenant_id,
+            "tenant_id": doc_tenant_id,
             "strategy": strat,
         }
         try:
@@ -1020,7 +1022,7 @@ def publish_document_chunk_tasks_service(
 
     result = {
         "doc_id": doc_id,
-        "tenant_id": tenant_id,
+        "tenant_id": doc_tenant_id,
         "published_count": published,
         "published_strategies": cleaned,
     }
