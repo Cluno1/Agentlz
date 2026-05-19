@@ -1419,10 +1419,10 @@ def agent_llm_exe_stream(*, agent_id: int, record_id: int, out: Dict[str, Any], 
             return str(x)
     def _sse(evt: str, payload: Any) -> str:
         nonlocal seq
-        env = EventEnvelope(evt=evt, seq=seq, ts=_now(), trace_id=trace_id, payload=_to_payload(payload))
+        from agentlz.core.sse_events import make_sse
+        frame = make_sse(evt, payload, seq=seq, trace_id=trace_id)
         seq += 1
-        txt = json.dumps(env.model_dump(), ensure_ascii=False)
-        return f"event: {evt}\nid: {env.seq}\ndata: {txt}\n\n"
+        return frame
     q: "queue.Queue[str]" = __import__("queue").Queue()
     DONE = "__SSE_DONE__"
     def _emit(evt: str, payload: Any) -> None:

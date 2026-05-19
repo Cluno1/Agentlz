@@ -149,21 +149,10 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
         """
         #把 payload 变成可JSON对象（把“非基础类型”安全地转换成可序列化结构）
         nonlocal seq
-        try:
-            if hasattr(payload, "model_dump"):
-                data_obj = payload.model_dump()
-            elif hasattr(payload, "__dataclass_fields__"):
-                data_obj = asdict(payload)
-            elif isinstance(payload, (dict, list, str, int, float)) or payload is None:
-                data_obj = payload
-            else:
-                data_obj = str(payload)
-        except Exception:
-            data_obj = str(payload)
-        env = EventEnvelope(evt=evt, seq=seq, ts=_now(), trace_id=trace_id, payload=data_obj)
+        from agentlz.core.sse_events import make_sse
+        frame = make_sse(evt, payload, seq=seq, trace_id=trace_id)
         seq += 1
-        txt = json.dumps(env.model_dump(), ensure_ascii=False)
-        return f"event: {evt}\nid: {env.seq}\ndata: {txt}\n\n"
+        return frame
 
     from .steps.root_handler import RootHandler
     import asyncio
