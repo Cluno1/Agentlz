@@ -412,14 +412,26 @@ def chat_agent(payload: AgentChatInput, request: Request):
         agent_service.ensure_agent_access_service(agent_id=int(payload.agent_id), tenant_id=tenant_id, claims=claims)
         agent_id = int(payload.agent_id)
     logger.info(f"[chat_agent] 获取 agent id 成功: agent_id={agent_id}")
+    meta = payload.meta or {}
+    try:
+        if claims and isinstance(claims, dict):
+            uid = str(claims.get("sub") or "").strip()
+            if uid:
+                meta["user_id"] = uid
+    except Exception:
+        pass
+    try:
+        meta["tenant_id"] = require_tenant_id(request)
+    except Exception:
+        pass
     if payload.type == 1:
         if not payload.record_id:
             raise HTTPException(status_code=400, detail="record_id不能为空")
         rag_service.ensure_record_belongs_to_agent_service(record_id=int(payload.record_id), agent_id=int(agent_id))
         logger.info(f"[chat_agent] 校验 record id 成功: record_id={payload.record_id}")
-        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id), meta=payload.meta)
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, record_id=int(payload.record_id), meta=meta)
     else:
-        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, meta=payload.meta)
+        generator = agent_service.agent_chat_service(agent_id=agent_id, message=payload.message, meta=meta)
     return StreamingResponse(generator, media_type="text/event-stream")
 
 

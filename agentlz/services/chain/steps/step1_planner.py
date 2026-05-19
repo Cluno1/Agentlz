@@ -1,13 +1,14 @@
 from __future__ import annotations
+import json
 from agentlz.services.chain.handler import Handler
-from agentlz.services.chain.chain_service import ChainContext
+from agentlz.services.chain.chain_service import ChainContext, get_chain_model
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
 from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
-from agentlz.agents.planner.tools.mcp_config_tool import make_mcp_keyword_tool
-from agentlz.schemas.workflow import WorkflowPlan
+from agentlz.agents.planner.tools.mcp_config_tool import make_mcp_keyword_tool, _get_mcp_config_by_keyword
+from agentlz.schemas.workflow import WorkflowPlan, MCPConfigItem
 from agentlz.prompts.planner.planner import PLANNER_SYSTEM_PROMPT
 
 
@@ -49,14 +50,23 @@ class PlannerHandler(Handler):
                 ctx.ai_agent_config_map["mcp_selected_rows"] = rows
             except Exception:
                 pass
-        except Exception:
+        except Exception as e:
             # 记录错误并标记失败步骤
             ctx.errors.append("planner_failed")
-            ctx.steps.append({"name": "planner", "status": "failed"})
+            ctx.steps.append({"name": "planner", "status": "failed", "output": {"error": str(e)}})
+            ctx.fact_msg = f"规划失败：{e}"
+            ctx.stop_chain = True
+            try:
+                logger.exception("planner_failed: %r", e)
+            except Exception:
+                pass
+            self.send_sse(ctx, "executor.error", {"stage": "planner", "message": str(e)})
         return await super().handle(ctx)
 
     def next(self, ctx: ChainContext) -> Handler | None:
         """路由到执行节点"""
+        if getattr(ctx, "stop_chain", False):
+            return None
         # 规划完成后进入执行阶段
         from agentlz.services.chain.steps.step2_executor import ExecutorHandler
         return ExecutorHandler()
@@ -73,20 +83,63 @@ class PlannerHandler(Handler):
         """
         settings = get_settings()
         logger = setup_logging(settings.log_level)
-        llm = get_model(settings)
+        llm = get_chain_model(ctx, streaming=False)
         if llm is None:
             return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：模型未配置。")
         # 构建提示词模板：包含系统提示与用户输入占位符
         prompt = ChatPromptTemplate.from_messages([("system", PLANNER_SYSTEM_PROMPT), ("human", "{user_input}")])
         # 注册可调用工具：从关键词解析 MCP 配置
-        tools = [make_mcp_keyword_tool(getattr(ctx, "user_id", None), getattr(ctx, "tenant_id", None))]
+        tools = [make_mcp_keyword_tool(getattr(ctx, "user_id", None), getattr(ctx, "tenant_id", None), getattr(ctx, "agent_id", None))]
         # 创建代理，指定返回结构化 `WorkflowPlan`
         agent = create_agent(model=llm, tools=tools, system_prompt=PLANNER_SYSTEM_PROMPT, response_format=WorkflowPlan)
         # 格式化对话，取最后一条人类消息作为输入
         formatted_msgs = prompt.format_messages(user_input=str(ctx.user_input))
         user_msg = formatted_msgs[-1]
         # 异步调用代理，更契合步骤的异步上下文
-        response = await agent.ainvoke({"messages": [user_msg]})
+        try:
+            response = await agent.ainvoke({"messages": [user_msg]})
+        except Exception as e:
+            fallback = self._fallback_plan_from_mcp(ctx)
+            if fallback is not None:
+                logger.warning(f"planner model failed, using MCP fallback: {e}")
+                return fallback
+            raise
         if isinstance(response, dict) and response.get("structured_response") is not None:
             return response["structured_response"]
+        fallback = self._fallback_plan_from_mcp(ctx)
+        if fallback is not None:
+            logger.warning("planner model did not return structured_response, using MCP fallback")
+            return fallback
         return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：未返回结构化计划。")
+
+    def _fallback_plan_from_mcp(self, ctx: ChainContext) -> WorkflowPlan | None:
+        raw = _get_mcp_config_by_keyword(
+            str(ctx.user_input),
+            user_id=getattr(ctx, "user_id", None),
+            tenant_id=getattr(ctx, "tenant_id", None),
+            agent_id=getattr(ctx, "agent_id", None),
+        )
+        try:
+            rows = json.loads(raw)
+        except Exception:
+            rows = []
+        if not isinstance(rows, list) or not rows:
+            return None
+        items = []
+        for row in rows[:3]:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "")
+            transport = str(row.get("transport") or "")
+            command = str(row.get("command") or "")
+            args = row.get("args") if isinstance(row.get("args"), list) else []
+            if name and transport and command:
+                items.append(MCPConfigItem(name=name, transport=transport, command=command, args=args))
+        if not items:
+            return None
+        chain = [item.name for item in items]
+        instructions = (
+            "Planner 结构化输出不可用，已根据 MCP 检索结果生成兜底计划："
+            f"按顺序调用 {', '.join(chain)}，将用户原始输入作为工具查询内容，并汇总工具返回结果。"
+        )
+        return WorkflowPlan(execution_chain=chain, mcp_config=items, instructions=instructions)

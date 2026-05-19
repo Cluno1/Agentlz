@@ -72,7 +72,25 @@ def _decide_stream_mode(
         decision_source = "meta"
     else:
         decision_source = "auto"
-        intent, confidence, reason = classify_chat_or_exe_intent(message, agent_desc)
+        llm_override = None
+        if isinstance(meta_conf, dict):
+            model_name = str(meta_conf.get("model_name") or "") or None
+            chat_api_key = meta_conf.get("chatopenai_api_key")
+            chat_base_url = meta_conf.get("chatopenai_base_url")
+            openai_key = meta_conf.get("openai_api_key")
+            if model_name or chat_api_key or chat_base_url or openai_key:
+                try:
+                    llm_override = get_model_by_name(
+                        settings=get_settings(),
+                        model_name=model_name or get_settings().model_name,
+                        streaming=False,
+                        chatopenai_api_key=chat_api_key,
+                        chatopenai_base_url=chat_base_url,
+                        openai_api_key=openai_key,
+                    )
+                except Exception:
+                    llm_override = None
+        intent, confidence, reason = classify_chat_or_exe_intent(message, agent_desc, llm=llm_override)
         intent_result = {
             "intent": intent,
             "confidence": confidence,
@@ -104,6 +122,46 @@ def _current_user_id(claims: Optional[Dict[str, Any]]) -> int:
         return int(claims["sub"])
     except Exception:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
+
+
+def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[str, Any], agent_id: int, max_steps: int = 6) -> Iterator[str]:
+    from agentlz.services.chain.chain_service import stream_chain_generator
+
+    q: "queue.Queue[Any]" = queue.Queue()
+    done = object()
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+
+            async def _consume() -> None:
+                async for frame in stream_chain_generator(
+                    user_input=user_input,
+                    tenant_id=tenant_id,
+                    claims=claims,
+                    max_steps=max_steps,
+                    agent_id=agent_id,
+                ):
+                    q.put(frame)
+
+            loop.run_until_complete(_consume())
+        except Exception as e:
+            payload = json.dumps({"evt": "executor.error", "payload": {"stage": "auto_stream", "message": str(e)}}, ensure_ascii=False)
+            q.put(f"event: executor.error\ndata: {payload}\n\n")
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+            q.put(done)
+
+    threading.Thread(target=_runner, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is done:
+            break
+        yield item
 
 
 def _is_system_admin(user: Optional[Dict[str, Any]]) -> bool:
@@ -1551,12 +1609,22 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
     except Exception:
         meta_for_record = meta
         
-    # 观测模式
     if bool(is_observation):
         logger.debug(f"观测模式开启，record_id={record_id}")
-    # 记录 RAG 开始/结束时间，并推送观测信息
     rag_start = time.time()
-    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
+    if stream_mode == "exe":
+        if int(record_id) <= 0:
+            try:
+                created = record_repo.create_record(
+                    payload={"agent_id": int(agent_id), "name": str(message or ""), "meta": meta_for_record},
+                    table_name=getattr(get_settings(), "record_table_name", "record"),
+                )
+                record_id = int(created.get("id") or record_id)
+            except Exception:
+                pass
+        out = {"doc": "", "history": "", "message": str(message or ""), "record_id": int(record_id), "messages": [str(message or "")]}
+    else:
+        out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
     rag_end = time.time()
     rag_time_ms = int((rag_end - rag_start) * 1000)
     try:
@@ -1622,7 +1690,26 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
                 yield "data: [DONE]\n\n"
                 return
             if stream_mode == "exe":
-                yield from agent_llm_exe_stream(agent_id=int(agent_id), record_id=int(record_id), out=out, meta=meta)
+                try:
+                    yield f"data: {json.dumps({'record_id': int(record_id)})}\n\n"
+                except Exception:
+                    yield f"data: {json.dumps({'record_id': record_id})}\n\n"
+                tenant_id = "default"
+                user_id = None
+                try:
+                    if isinstance(meta, dict):
+                        tenant_id = str(meta.get("tenant_id") or tenant_id)
+                        user_id = meta.get("user_id")
+                except Exception:
+                    pass
+                claims = {"sub": str(user_id or "")}
+                yield from _iter_async_chain_stream(
+                    user_input=str(message or ""),
+                    tenant_id=tenant_id,
+                    claims=claims,
+                    agent_id=int(agent_id),
+                    max_steps=6,
+                )
             else:
                 yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)
         finally:

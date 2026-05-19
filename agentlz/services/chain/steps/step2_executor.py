@@ -1,6 +1,7 @@
 from __future__ import annotations
+import json
 from agentlz.services.chain.handler import Handler
-from agentlz.services.chain.chain_service import ChainContext
+from agentlz.services.chain.chain_service import ChainContext, get_chain_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
@@ -10,6 +11,47 @@ from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import ExecutorTrace, ToolCall
 from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
+
+
+def _looks_like_url(value) -> bool:
+    return isinstance(value, str) and (value.startswith("http://") or value.startswith("https://"))
+
+
+def _json_or_value(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return value
+
+
+def _extract_url(value) -> str:
+    if _looks_like_url(value):
+        return str(value)
+    value = _json_or_value(value)
+    if isinstance(value, (list, tuple)):
+        for item in reversed(value):
+            url = _extract_url(item)
+            if url:
+                return url
+    if isinstance(value, dict):
+        for key in ("url", "endpoint", "server_url"):
+            url = value.get(key)
+            if _looks_like_url(url):
+                return str(url)
+        for item in value.values():
+            url = _extract_url(item)
+            if url:
+                return url
+    return ""
+
+
+def _normalize_stdio_args(args):
+    args = _json_or_value(args)
+    if isinstance(args, tuple):
+        return list(args)
+    return args if isinstance(args, list) else []
 
 
 # 执行节点（ExecutorHandler）说明：
@@ -40,6 +82,8 @@ class ExecutorHandler(Handler):
 
     def next(self, ctx: ChainContext) -> Handler | None:
         """路由到校验节点"""
+        if getattr(ctx, "stop_chain", False):
+            return None
         # 执行完成后进入校验阶段
         from agentlz.services.chain.steps.step3_check import CheckHandler
         return CheckHandler()
@@ -61,16 +105,22 @@ class ExecutorHandler(Handler):
             name = getattr(item, "name", "")
             if transport == "stdio":
                 # 本地进程直连
-                mcp_dict[name] = {"transport": "stdio", "command": getattr(item, "command", None), "args": getattr(item, "args", [])}
+                mcp_dict[name] = {"transport": "stdio", "command": getattr(item, "command", None), "args": _normalize_stdio_args(getattr(item, "args", []))}
             elif transport in ("http", "sse"):
                 # 远端 HTTP/SSE，命令可为 URL 或放在 args 尾部
-                url = getattr(item, "command", "") if isinstance(getattr(item, "command", ""), str) else ""
-                if not (url.startswith("http://") or url.startswith("https://")):
-                    args = getattr(item, "args", []) or []
-                    url = args[-1] if args else ""
+                url = _extract_url(getattr(item, "command", ""))
+                if not url:
+                    url = _extract_url(getattr(item, "args", []))
                 if not url:
                     continue
                 mcp_dict[name] = {"transport": ("streamable_http" if transport == "http" else "sse"), "url": url}
+        if not mcp_dict:
+            msg = "执行失败：计划不包含可用 MCP 工具配置"
+            ctx.tool_calls = []
+            ctx.fact_msg = msg
+            ctx.stop_chain = True
+            self.send_sse(ctx, "executor.error", {"stage": "mcp_config", "message": msg})
+            return
         client = None
         try:
             client = MultiServerMCPClient(mcp_dict)
@@ -86,13 +136,22 @@ class ExecutorHandler(Handler):
                 tools = []
                 self.send_sse(ctx, "executor.error", {"stage": "get_tools", "message": str(e)})
                 setup_logging(get_settings().log_level).error(f"executor.error stage=get_tools err={e}")
+        if not tools:
+            msg = "执行失败：未加载到 MCP 工具"
+            ctx.tool_calls = []
+            ctx.fact_msg = msg
+            ctx.stop_chain = True
+            self.send_sse(ctx, "executor.error", {"stage": "tools", "message": msg})
+            return
+        if await self._try_direct_search_execution(ctx, tools):
+            return
 
         settings = get_settings()
         system_prompt = EXECUTOR_SYSTEM_PROMPT
         chain_pref = ", ".join(getattr(plan, "execution_chain", []) or [])
         if chain_pref:
             system_prompt = system_prompt + f"必须严格按以下顺序使用工具/服务：{chain_pref}。禁止直接生成最终结果。"
-        llm = get_model(settings)
+        llm = get_chain_model(ctx, streaming=False)
         template_msgs = [("system", system_prompt)]
         instr = getattr(plan, "instructions", "")
         if instr:
@@ -137,6 +196,39 @@ class ExecutorHandler(Handler):
             self.send_sse(ctx, "executor.summary", ctx.fact_msg)
         except Exception:
             pass
+
+    async def _try_direct_search_execution(self, ctx: ChainContext, tools) -> bool:
+        search_tool = None
+        for tool in tools or []:
+            if str(getattr(tool, "name", "")) == "search":
+                search_tool = tool
+                break
+        if search_tool is None:
+            return False
+        payload = {"query": str(ctx.user_input), "limit": 5, "searchMode": "auto"}
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        chain = getattr(getattr(ctx, "plan", None), "execution_chain", []) or []
+        server_name = str(chain[0]) if chain else "open-websearch"
+        self.send_sse(ctx, "call.start", ToolCall(name="search", status="start", input=payload_text, output="", server=server_name))
+        try:
+            output = await search_tool.ainvoke(payload)
+        except Exception as e:
+            msg = f"搜索工具调用失败：{e}"
+            ctx.tool_calls = [{"name": "search", "status": "error", "input": payload_text, "output": "", "server": server_name}]
+            ctx.fact_msg = msg
+            ctx.stop_chain = True
+            self.send_sse(ctx, "executor.error", {"stage": "tool_call", "message": msg})
+            return True
+        output_text = str(output)
+        call = {"name": "search", "status": "success", "input": payload_text, "output": output_text, "server": server_name}
+        ctx.tool_calls = [call]
+        ctx.fact_msg = (
+            f"工具调用摘要:\n01. search -> success\n服务器: {server_name}\n输入: {payload_text}\n输出: {output_text}"
+            f"\n\n最终结果:\n{output_text}"
+        )
+        self.send_sse(ctx, "call.end", ToolCall(name="search", status="success", input=payload_text, output=output_text, server=server_name))
+        self.send_sse(ctx, "executor.summary", ctx.fact_msg)
+        return True
 
 
 class _ToolLogHandler(BaseCallbackHandler):

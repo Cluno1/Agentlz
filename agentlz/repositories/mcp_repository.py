@@ -7,6 +7,64 @@ from agentlz.core.database import get_mysql_engine
 
 
 # 按关键词模糊搜索 MCP 配置
+def _normalize_args(args: Any) -> Any:
+    if isinstance(args, str):
+        try:
+            return json.loads(args)
+        except Exception:
+            return [args] if args else []
+    if isinstance(args, tuple):
+        return list(args)
+    if isinstance(args, (list, dict)):
+        return args
+    return []
+
+
+def _looks_like_url(value: Any) -> bool:
+    return isinstance(value, str) and (value.startswith("http://") or value.startswith("https://"))
+
+
+def _extract_url(value: Any) -> str:
+    if _looks_like_url(value):
+        return str(value)
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return ""
+    else:
+        value = _normalize_args(value)
+    if isinstance(value, list):
+        for item in reversed(value):
+            url = _extract_url(item)
+            if url:
+                return url
+    if isinstance(value, dict):
+        for key in ("url", "endpoint", "server_url"):
+            url = value.get(key)
+            if _looks_like_url(url):
+                return str(url)
+        for item in value.values():
+            url = _extract_url(item)
+            if url:
+                return url
+    return ""
+
+
+def _extract_stdio_server(name: str, command: str, args: Any) -> tuple[str, Any]:
+    data = _normalize_args(args)
+    if not isinstance(data, dict):
+        return command, data
+    servers = data.get("mcpServers") if isinstance(data.get("mcpServers"), dict) else data
+    server = servers.get(name) if isinstance(servers, dict) else None
+    if not isinstance(server, dict) and isinstance(servers, dict) and len(servers) == 1:
+        only = next(iter(servers.values()))
+        server = only if isinstance(only, dict) else None
+    if not isinstance(server, dict):
+        return command, []
+    return str(server.get("command") or command), _normalize_args(server.get("args"))
+
+
 def search_mcp_by_keyword(keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
     """按关键词在 name/description 模糊匹配，并按 trust_score 降序返回。"""
     like = f"%{keyword}%"
@@ -26,24 +84,31 @@ def search_mcp_by_keyword(keyword: str, limit: int = 10) -> List[Dict[str, Any]]
 
     # 规范化 args 字段为 List[str]
     for r in rows:
-        args = r.get("args")
-        if isinstance(args, str):
-            try:
-                r["args"] = json.loads(args)
-            except Exception:
-                r["args"] = [args]
-        elif not isinstance(args, list):
-            r["args"] = []
+        r["args"] = _normalize_args(r.get("args"))
     return rows
 
 # 转换为工具配置字典
 def to_tool_config(row: Dict[str, Any]) -> Dict[str, Any]:
     """将数据库行转换为工具配置字典（与 WorkflowPlan.mcp_config 对齐）。"""
+    name = row.get("name", "")
+    transport = str(row.get("transport", "stdio") or "stdio")
+    command = row.get("command", "python")
+    args = _normalize_args(row.get("args", []))
+    if transport.lower() in ("http", "sse"):
+        url = str(command) if _looks_like_url(command) else _extract_url(args)
+        if url:
+            command = url
+            args = [url]
+        else:
+            args = args if isinstance(args, list) else []
+    elif transport.lower() == "stdio":
+        command, args = _extract_stdio_server(str(name), str(command or ""), args)
+        args = args if isinstance(args, list) else []
     return {
-        "name": row.get("name", ""),
-        "transport": row.get("transport", "stdio"),
-        "command": row.get("command", "python"),
-        "args": row.get("args", []),
+        "name": name,
+        "transport": transport,
+        "command": command,
+        "args": args,
     }
 
 
@@ -62,14 +127,7 @@ def get_mcp_agents_by_ids(ids: List[int]) -> List[Dict[str, Any]]:
         result = conn.execute(sql, names)
         rows = [dict(r._mapping) for r in result.fetchall()]
     for r in rows:
-        a = r.get("args")
-        if isinstance(a, str):
-            try:
-                r["args"] = json.loads(a)
-            except Exception:
-                r["args"] = [a]
-        elif not isinstance(a, list):
-            r["args"] = []
+        r["args"] = _normalize_args(r.get("args"))
     return rows
 
 def list_visible_mcp_ids(user_id: int | None, tenant_id: str | None = None) -> List[int]:

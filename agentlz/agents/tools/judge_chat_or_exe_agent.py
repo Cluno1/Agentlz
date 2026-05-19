@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from agentlz.config.settings import get_settings
 from agentlz.core.logger import setup_logging
@@ -17,6 +17,7 @@ from agentlz.prompts.tools.judge_chat_or_exe_prompt import (
 def classify_chat_or_exe_intent(
     user_input: str,
     agent_description: Optional[str] = None,
+    llm: Any = None,
 ) -> Tuple[str, float, str]:
     """
     根据用户自然语言输入与 Agent 描述信息，判断当前请求适合进入 chat 还是 exe 模式。
@@ -37,30 +38,22 @@ def classify_chat_or_exe_intent(
         name="agentlz.intent_classifier",
         prefix="[IntentClassifier]",
     )
-    llm = get_model(settings)
+    llm = llm or get_model(settings)
     if llm is None:
         logger.error("Intent classifier model not configured")
         return "chat", 0.0, "model_not_configured"
 
-    # 构建提示词模板：system 描述分类标准，human 注入用户输入与 Agent 描述
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", INTENT_CLASSIFIER_SYSTEM_PROMPT),
-            (
-                "human",
-                "用户输入：{user_input}\n\n"
-                "Agent 描述：{agent_description}\n\n"
-                "请根据上述规则，只输出严格符合要求的 JSON。",
+    try:
+        messages = [
+            SystemMessage(content=INTENT_CLASSIFIER_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f"用户输入：{str(user_input or '')}\n\n"
+                    f"Agent 描述：{str(agent_description or '')}\n\n"
+                    "请根据上述规则，只输出严格符合要求的 JSON。"
+                )
             ),
         ]
-    )
-
-    try:
-        # 将输入格式化为消息序列，并调用底层模型
-        messages = prompt.format_messages(
-            user_input=str(user_input or ""),
-            agent_description=str(agent_description or ""),
-        )
         resp: Any = llm.invoke(messages)
 
         # 优先从 resp.content 读取文本内容，若不存在则退回 str(resp)
@@ -100,8 +93,9 @@ def classify_chat_or_exe_intent(
 
         return intent, confidence, reason
     except Exception as e:
-        # 任意异常均回退为 chat 模式，避免影响主链路可用性
+        text = str(user_input or "")
+        exe_keywords = ("联网", "搜索", "查询", "实时", "最新", "调用", "执行", "分析", "生成报表")
+        if any(k in text for k in exe_keywords):
+            return "exe", 0.8, "keyword_fallback"
         logger.error(f"intent classification failed: {e}")
         return "chat", 0.0, "intent_classification_failed"
-
-

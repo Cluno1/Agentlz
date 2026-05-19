@@ -36,6 +36,7 @@ class ChainContext:
         self.max_step: int = 6
         self.session_id: Optional[str] = None
         self.tenant_id: Optional[str] = None
+        self.agent_id: Optional[int] = None
 
 
 
@@ -71,7 +72,44 @@ def _is_check_passed(res: Any) -> bool:
     return False
 
 
-async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dict[str, Any], max_steps: Optional[int] = None):
+def get_chain_model(ctx: ChainContext, *, streaming: bool = False):
+    """按链路上下文选择模型；有 agent_id 时优先使用 Agent meta 中的模型配置。"""
+    from agentlz.core.model_factory import get_model, get_model_by_name
+    settings = get_settings()
+    agent_id = getattr(ctx, "agent_id", None)
+    if agent_id is not None:
+        try:
+            from agentlz.repositories import agent_repository as agent_repo
+            row = agent_repo.get_agent_by_id_any_tenant(
+                agent_id=int(agent_id),
+                table_name=getattr(settings, "agent_table_name", "agent"),
+            )
+            meta_conf = row.get("meta") if row else None
+            if isinstance(meta_conf, str):
+                try:
+                    meta_conf = json.loads(meta_conf)
+                except Exception:
+                    meta_conf = None
+            if isinstance(meta_conf, dict):
+                model_name = str(meta_conf.get("model_name") or "") or None
+                chat_api_key = meta_conf.get("chatopenai_api_key")
+                chat_base_url = meta_conf.get("chatopenai_base_url")
+                openai_key = meta_conf.get("openai_api_key")
+                if model_name or chat_api_key or chat_base_url or openai_key:
+                    return get_model_by_name(
+                        settings=settings,
+                        model_name=model_name or settings.model_name,
+                        streaming=streaming,
+                        chatopenai_api_key=chat_api_key,
+                        chatopenai_base_url=chat_base_url,
+                        openai_api_key=openai_key,
+                    )
+        except Exception as e:
+            setup_logging(settings.log_level).warning(f"chain model override failed: {e}")
+    return get_model(settings, streaming=streaming)
+
+
+async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dict[str, Any], max_steps: Optional[int] = None, agent_id: Optional[int] = None):
     """
     SSE 事件流生成器（异步生成器）。
 
@@ -152,6 +190,7 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     hard_limit = int(getattr(s, "chain_hard_limit", 20))
     ctx.max_step = min(user_max, hard_limit)
     ctx.tenant_id = tenant_id
+    ctx.agent_id = int(agent_id) if agent_id is not None else None
 
     # 若用户请求的步数超过系统硬上限：不执行链路，仅推送最终提示并结束
     if user_max > hard_limit:

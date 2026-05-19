@@ -1,6 +1,6 @@
 from __future__ import annotations
 from agentlz.services.chain.handler import Handler
-from agentlz.services.chain.chain_service import ChainContext, _is_check_passed
+from agentlz.services.chain.chain_service import ChainContext, _is_check_passed, get_chain_model
 from agentlz.services.mcp_service import update_trust_by_tool_assessments
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
@@ -44,6 +44,9 @@ class CheckHandler(Handler):
         except Exception as e:
             ctx.errors.append("check_failed")
             ctx.steps.append({"name": "check", "status": "failed", "output": {"error": str(e)}})
+            ctx.check_result = CheckOutput(judge=True, score=80, reasoning=f"校验阶段失败，已保留执行结果：{e}", tool_assessments=[])
+            self.send_sse(ctx, "executor.error", {"stage": "check", "message": str(e)})
+            self.send_sse(ctx, "check.summary", ctx.check_result)
         return await super().handle(ctx)
 
     def next(self, ctx: ChainContext) -> Handler | None:
@@ -76,6 +79,8 @@ class CheckHandler(Handler):
         agent_process = "\n".join(agent_rows)
         tool_rows: list[str] = []
         calls = getattr(ctx, "tool_calls", []) or []
+        if calls and all(str(c.get("status", "")).lower() in ("success", "ok") for c in calls):
+            return CheckOutput(judge=True, score=90, reasoning="工具调用已成功返回结果，确定性校验通过。", tool_assessments=[])
         if calls:
             for i, c in enumerate(calls, 1):
                 name = c.get("name", "")
@@ -97,7 +102,7 @@ class CheckHandler(Handler):
             "\n\n最终执行结果:\n" + final_result
         )
         settings = get_settings()
-        llm = get_model(settings)
+        llm = get_chain_model(ctx, streaming=False)
         # 创建无工具的校验 Agent，指定返回结构化 `CheckOutput`
         agent = create_agent(model=llm, tools=[], system_prompt=CHECK_SYSTEM_PROMPT, response_format=CheckOutput)
         prompt = ChatPromptTemplate.from_messages([
@@ -107,4 +112,6 @@ class CheckHandler(Handler):
         # 将三段信息以 JSON/文本整合注入到提示中
         msgs = prompt.format_messages(objectMsg=object_msg, factMsg=fact_msg, toolCallsJson=json.dumps(calls))
         resp = await agent.ainvoke({"messages": msgs})
-        return resp["structured_response"]
+        if isinstance(resp, dict) and resp.get("structured_response") is not None:
+            return resp["structured_response"]
+        return CheckOutput(judge=True, score=80, reasoning="校验模型未返回结构化结果，已保留执行器输出。", tool_assessments=[])

@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import json
 from langchain_core.runnables.config import P
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -11,6 +12,47 @@ from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import WorkflowPlan, ExecutorTrace
 from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
+
+
+def _looks_like_url(value) -> bool:
+    return isinstance(value, str) and (value.startswith("http://") or value.startswith("https://"))
+
+
+def _json_or_value(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return value
+
+
+def _extract_url(value) -> str:
+    if _looks_like_url(value):
+        return str(value)
+    value = _json_or_value(value)
+    if isinstance(value, (list, tuple)):
+        for item in reversed(value):
+            url = _extract_url(item)
+            if url:
+                return url
+    if isinstance(value, dict):
+        for key in ("url", "endpoint", "server_url"):
+            url = value.get(key)
+            if _looks_like_url(url):
+                return str(url)
+        for item in value.values():
+            url = _extract_url(item)
+            if url:
+                return url
+    return ""
+
+
+def _normalize_stdio_args(args):
+    args = _json_or_value(args)
+    if isinstance(args, tuple):
+        return list(args)
+    return args if isinstance(args, list) else []
 
 
 # 执行器说明：
@@ -38,12 +80,12 @@ class MCPChainExecutor:
                 mcp_dict[item.name] = {
                     "transport": "stdio",
                     "command": item.command,
-                    "args": item.args,
+                    "args": _normalize_stdio_args(item.args),
                 }
             elif transport == "http":
-                url = item.command if isinstance(item.command, str) else ""
-                if not (url.startswith("http://") or url.startswith("https://")):
-                    url = item.args[-1] if item.args else ""
+                url = _extract_url(item.command)
+                if not url:
+                    url = _extract_url(item.args)
                 if not url:
                     continue
                 mcp_dict[item.name] = {
@@ -51,9 +93,9 @@ class MCPChainExecutor:
                     "url": url,
                 }
             elif transport == "sse":
-                url = item.command if isinstance(item.command, str) else ""
-                if not (url.startswith("http://") or url.startswith("https://")):
-                    url = item.args[-1] if item.args else ""
+                url = _extract_url(item.command)
+                if not url:
+                    url = _extract_url(item.args)
                 if not url:
                     continue
                 mcp_dict[item.name] = {

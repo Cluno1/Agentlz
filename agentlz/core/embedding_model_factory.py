@@ -23,7 +23,7 @@ _HF_EMBEDDINGS_INIT_LOCK = threading.Lock()
 
 
 def get_hf_embeddings(
-    model_name: Optional[str] = "BAAI/bge-small-zh-v1.5",
+    model_name: Optional[str] = None,
     device: Optional[str] = "cpu",
     normalize_embeddings: bool = True,
 ):
@@ -31,7 +31,7 @@ def get_hf_embeddings(
     创建并返回一个 HuggingFace 中文句向量嵌入模型（LangChain 兼容）。
 
     参数:
-        model_name: 模型名称或本地路径，默认使用 "BAAI/bge-small-zh-v1.5"
+        model_name: 模型名称或本地路径；不传时读取 HF_EMBEDDING_MODEL，最后回退到 "BAAI/bge-small-zh-v1.5"
         device: 设备标识（如 "cpu"/"cuda"），不传则默认 cpu
         normalize_embeddings: 是否归一化向量，默认 True
 
