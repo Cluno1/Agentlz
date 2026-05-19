@@ -24,7 +24,7 @@ def _current_user(claims: Optional[Dict[str, Any]], tenant_id: str) -> Optional[
 def _is_system_admin(user: Optional[Dict[str, Any]]) -> bool:
     if not user:
         return False
-    return str(user.get("role") or "") == "admin" and str(user.get("tenant_id") or "") == "system"
+    return str(user.get("role") or "") == "admin" and str(user.get("tenant_id") or "") in {"system", "default"}
 
 
 def _is_tenant_admin_for(user: Optional[Dict[str, Any]], target_tenant_id: str) -> bool:
