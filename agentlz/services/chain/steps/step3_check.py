@@ -79,8 +79,7 @@ class CheckHandler(Handler):
         agent_process = "\n".join(agent_rows)
         tool_rows: list[str] = []
         calls = getattr(ctx, "tool_calls", []) or []
-        if calls and all(str(c.get("status", "")).lower() in ("success", "ok") for c in calls):
-            return CheckOutput(judge=True, score=90, reasoning="工具调用已成功返回结果，确定性校验通过。", tool_assessments=[])
+        # [summary patch] 去除「全成功→确定性判 90」短路，让 check 模型真读总结后的 fact_msg
         if calls:
             for i, c in enumerate(calls, 1):
                 name = c.get("name", "")

@@ -11,6 +11,8 @@ from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
 from agentlz.schemas.workflow import ExecutorTrace, ToolCall
 from agentlz.prompts.executor.executor import EXECUTOR_SYSTEM_PROMPT
+from agentlz.prompts.summary.summary import SUMMARY_SYSTEM_PROMPT
+from langchain_core.messages import SystemMessage, HumanMessage
 
 
 def _looks_like_url(value) -> bool:
@@ -74,6 +76,7 @@ class ExecutorHandler(Handler):
             # 流式推送：阶段进入（executor），前端可切换到执行视图
             self.send_sse(ctx, "chain.step", "executor")
             await self._run_executor(ctx)
+            await self._summarize_results(ctx)
             ctx.steps.append({"name": "executor", "status": "passed", "output": ctx.fact_msg})
         except Exception:
             ctx.errors.append("executor_failed")
@@ -196,6 +199,51 @@ class ExecutorHandler(Handler):
             self.send_sse(ctx, "executor.summary", ctx.fact_msg)
         except Exception:
             pass
+
+    async def _summarize_results(self, ctx: ChainContext) -> None:
+        """MCP 执行完成后，对工具返回的总结果做一次 LLM 汇总。
+
+        汇总文本写回 ctx.fact_msg，作为最终结果交给 Check 校验并作为 final 呈现；
+        无工具输出 / LLM 失败 / 结果为空时保留原始 ctx.fact_msg，不丢数据。
+        """
+        if getattr(ctx, "stop_chain", False):
+            return
+        calls = getattr(ctx, "tool_calls", []) or []
+        parts = []
+        for i, c in enumerate(calls, 1):
+            out = str(c.get("output", "") or "").strip()
+            if out:
+                parts.append(
+                    f"[工具{i} {c.get('name','')} @ {c.get('server','')}]\n{out}"
+                )
+        if not parts:
+            return
+        material = "\n\n".join(parts)
+        task = str(getattr(ctx, "current_task", "") or getattr(ctx, "user_input", ""))
+        try:
+            llm = get_chain_model(ctx, streaming=False)
+            resp = await llm.ainvoke([
+                SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
+                HumanMessage(
+                    content="用户问题：\n" + task
+                    + "\n\n工具/MCP 返回的原始结果：\n" + material
+                ),
+            ])
+            content = getattr(resp, "content", resp)
+            if isinstance(content, list):
+                content = "".join(str(x) for x in content)
+            summary = str(content or "").strip()
+        except Exception as e:
+            setup_logging(get_settings().log_level).warning(
+                f"executor.summarize failed: {e}"
+            )
+            return
+        if summary:
+            ctx.fact_msg = summary
+            try:
+                self.send_sse(ctx, "executor.synthesis", summary)
+            except Exception:
+                pass
 
     async def _try_direct_search_execution(self, ctx: ChainContext, tools) -> bool:
         search_tool = None
