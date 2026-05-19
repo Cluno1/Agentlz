@@ -23,14 +23,14 @@ RAG_QUERY_SYSTEM_PROMPT = """你是一个查询分析专家。分析用户输入
 
 【输出格式】
 严格返回 JSON 对象，不要 Markdown 代码块：
-{
+{{
   "messages": [
     "改写后的查询1（含指代消解）",
     "改写后的查询2（含指代消解）",
     "改写后的查询3（含指代消解）",
     "改写后的查询4（含指代消解）"
   ]
-}
+}}
 
 【示例】
 输入：
@@ -38,13 +38,13 @@ RAG_QUERY_SYSTEM_PROMPT = """你是一个查询分析专家。分析用户输入
 当前问题：<current_query>这个怎么解决 DeprecationWarning?</current_query>
 
 输出：
-{
+{{
   "messages": [
     "pandas 2.0 DeprecationWarning 解决方法",
     "pandas 1.5 升级到 2.0 警告处理",
     "FutureWarning pandas 升级兼容性"
   ]
-}
+}}
 """
 
 RAG_ANSWER_SYSTEM_PROMPT = """
