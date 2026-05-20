@@ -68,30 +68,57 @@ def _normalize_stdio_args(args):
 class ToolTimeoutMiddleware(AgentMiddleware):
     """限制工具调用耗时，并保护副作用工具不被同一轮重复执行。"""
 
-    def __init__(self, timeout: float = 30.0, single_call_tools: set[str] | None = None, called_single_tools: set[str] | None = None):
+    def __init__(
+        self,
+        timeout: float = 30.0,
+        single_call_tools: set[str] | None = None,
+        called_single_tools: set[str] | None = None,
+        cached_results: dict[str, str] | None = None,
+    ):
         super().__init__()
         self.timeout = timeout
         self.single_call_tools = set(single_call_tools or set())
         # 共享 set：跨外层 PDC 迭代持续，避免链路重启时副作用工具被重复真实调用
         self._called_single_tools: set[str] = called_single_tools if called_single_tools is not None else set()
+        # 共享 dict：缓存首次真实结果；后续 LLM 再次请求同一工具时复用，避免合成"否定"消息让 LLM 死循环
+        self._cached_results: dict[str, str] = cached_results if cached_results is not None else {}
 
-    async def awrap_tool_call(self, request: ToolCallRequest, handler):
-        tool_name = (request.tool_call or {}).get("name", "unknown")
-        tool_call_id = (request.tool_call or {}).get("id", "")
-        if tool_name in self.single_call_tools:
-            if tool_name in self._called_single_tools:
-                return ToolMessage(
-                    content=f"工具 {tool_name} 已在本次执行中调用过，重复调用已跳过。",
-                    tool_call_id=tool_call_id,
-                )
-            self._called_single_tools.add(tool_name)
+    async def awrap_tool_call(self, request, handler):
+        tool_call = request.tool_call or {}
+        tool_name = tool_call.get("name", "unknown")
+        tool_call_id = tool_call.get("id", "")
+
+        if tool_name in self.single_call_tools and tool_name in self._called_single_tools:
+            # 同一 ctx 内已成功调用过：返回首次真实结果（如有缓存），并引导 LLM 直接出最终答复
+            cached = self._cached_results.get(tool_name, "ok")
+            from langchain_core.messages import ToolMessage
+            return ToolMessage(
+                content=(
+                    f"工具 {tool_name} 已在本次任务中成功执行，结果为：{cached}。"
+                    f"任务已完成，请基于此结果直接给出最终答复，无需再次调用该工具。"
+                ),
+                tool_call_id=tool_call_id,
+            )
+
         try:
-            return await asyncio.wait_for(handler(request), timeout=self.timeout)
+            import asyncio
+            result = await asyncio.wait_for(handler(request), timeout=self.timeout)
         except asyncio.TimeoutError:
+            from langchain_core.messages import ToolMessage
             return ToolMessage(
                 content=f"工具 {tool_name} 调用超时（>{self.timeout}s），已跳过。",
                 tool_call_id=tool_call_id,
             )
+
+        if tool_name in self.single_call_tools:
+            self._called_single_tools.add(tool_name)
+            try:
+                content = getattr(result, "content", None)
+                if content is not None:
+                    self._cached_results[tool_name] = str(content)[:500]
+            except Exception:
+                pass
+        return result
 
 
 class ExecutorHandler(Handler):
@@ -192,7 +219,11 @@ class ExecutorHandler(Handler):
         system_prompt = EXECUTOR_SYSTEM_PROMPT
         chain_pref = ", ".join(getattr(plan, "execution_chain", []) or [])
         if chain_pref:
-            system_prompt = system_prompt + f"必须严格按以下顺序使用工具/服务：{chain_pref}。禁止直接生成最终结果。"
+            system_prompt = system_prompt + (
+                f"必须严格按以下顺序使用工具/服务：{chain_pref}。"
+                "每个工具最多调用一次：拿到工具返回后，立即基于结果给出最终答复，不要再次调用同一工具。"
+                "若某工具收到\"任务已完成\"/\"已成功执行\"语义的回复，请直接输出最终答复，不再调用任何工具。"
+            )
         llm = get_chain_model(ctx, streaming=False)
         template_msgs = [("system", system_prompt)]
         instr = getattr(plan, "instructions", "")
@@ -207,10 +238,14 @@ class ExecutorHandler(Handler):
             middleware=[ToolTimeoutMiddleware(
                 timeout=30,
                 single_call_tools={"send_mail"},
-                # ctx 是 dataclass-like 对象，没有 setdefault，直接用 __dict__ 兜底持久化
+                # ctx 是 dataclass-like 对象，没有 setdefault，直接用 __dict__ 兜底持久化共享状态
                 called_single_tools=(
                     getattr(ctx, "_called_single_tools", None)
                     or ctx.__dict__.setdefault("_called_single_tools", set())
+                ),
+                cached_results=(
+                    getattr(ctx, "_tool_cached_results", None)
+                    or ctx.__dict__.setdefault("_tool_cached_results", {})
                 ),
             )],
             response_format=ExecutorTrace,
@@ -218,7 +253,7 @@ class ExecutorHandler(Handler):
         formatted = prompt.format_messages(input=str(ctx.user_input), instructions=instr)
         # 工具回调发射器：在工具开始/结束时触发 `call.start`/`call.end` 事件
         handler = _ToolLogHandler(lambda evt, payload: self.send_sse(ctx, evt, payload))
-        resp = await asyncio.wait_for(agent.ainvoke({"messages": formatted}, config={"callbacks": [handler]}), timeout=180)
+        resp = await asyncio.wait_for(agent.ainvoke({"messages": formatted}, config={"callbacks": [handler], "recursion_limit": 10}), timeout=60)
         final_text = resp["messages"][-1].content if isinstance(resp, dict) else str(resp)
         logs = getattr(handler, "calls", [])
         if isinstance(resp, dict) and resp.get("structured_response") is not None:
