@@ -1,5 +1,7 @@
 from __future__ import annotations
+import asyncio
 import json
+import re
 from agentlz.services.chain.handler import Handler
 from agentlz.services.chain.chain_service import ChainContext, get_chain_model
 from langchain.agents import create_agent
@@ -97,7 +99,17 @@ class PlannerHandler(Handler):
         user_msg = formatted_msgs[-1]
         # 异步调用代理，更契合步骤的异步上下文
         try:
-            response = await agent.ainvoke({"messages": [user_msg]})
+            planner_timeout = float(getattr(settings, "chain_planner_timeout", 60.0) or 60.0)
+            response = await asyncio.wait_for(
+                agent.ainvoke({"messages": [user_msg]}),
+                timeout=planner_timeout,
+            )
+        except asyncio.TimeoutError:
+            fallback = self._fallback_plan_from_mcp(ctx)
+            if fallback is not None:
+                logger.warning(f"planner model timed out after {planner_timeout}s, using MCP fallback")
+                return fallback
+            raise TimeoutError(f"Planner 调用超时（>{planner_timeout}s）")
         except Exception as e:
             fallback = self._fallback_plan_from_mcp(ctx)
             if fallback is not None:
@@ -112,20 +124,83 @@ class PlannerHandler(Handler):
             return fallback
         return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：未返回结构化计划。")
 
+    def _fallback_keywords(self, text: str) -> list[str]:
+        candidates = [text]
+        lower = text.lower()
+        if "@" in text or any(x in text for x in ("邮件", "邮箱", "发送", "发给", "通知")):
+            candidates.extend(["邮件发送", "邮件", "发邮件"])
+        if any(x in text for x in ("搜索", "联网", "查询", "查找", "网页", "资料")):
+            candidates.extend(["联网搜索", "网页搜索", "搜索"])
+        if any(x in text for x in ("文件", "文档", "pdf", "PDF", "上传", "解析")):
+            candidates.extend(["文件处理", "文档处理", "PDF解析"])
+        if any(x in text for x in ("优化", "润色", "改写", "美化", "夸", "措辞")):
+            candidates.extend(["文本优化", "文本润色"])
+        if (
+            "plantuml" in lower
+            or "puml" in lower
+            or any(x in text for x in ("流程图", "时序图", "架构图", "转PNG", "转 png", "转图片", "生成图片", "画图"))
+        ):
+            candidates.extend(["PlantUML", "PUML", "puml2png", "流程图", "生成图片"])
+        if "http" in lower or "www." in lower:
+            candidates.extend(["网页抓取", "网页内容"])
+
+        seen = set()
+        result = []
+        for item in candidates:
+            kw = str(item or "").strip()
+            if kw and kw not in seen:
+                seen.add(kw)
+                result.append(kw)
+        return result
+
+    def _tool_names_for_row(self, row: dict, text: str) -> list[str]:
+        name = str(row.get("name") or "")
+        desc = str(row.get("description") or "")
+        haystack = f"{name}\n{desc}"
+        tools: list[str] = []
+        if "send_mail" in haystack:
+            tools.append("send_mail")
+        if "render_puml_to_png" in haystack or "puml2png" in haystack:
+            tools.append("render_puml_to_png")
+        if re.search(r"(?<![A-Za-z0-9_])search(?![A-Za-z0-9_])", haystack):
+            tools.append("search")
+        if "fetchWebContent" in haystack and any(x in text for x in ("网页", "链接", "正文", "内容")):
+            tools.append("fetchWebContent")
+        return tools or ([name] if name else [])
+
     def _fallback_plan_from_mcp(self, ctx: ChainContext) -> WorkflowPlan | None:
-        raw = _get_mcp_config_by_keyword(
-            str(ctx.user_input),
-            user_id=getattr(ctx, "user_id", None),
-            tenant_id=getattr(ctx, "tenant_id", None),
-            agent_id=getattr(ctx, "agent_id", None),
-        )
-        try:
-            rows = json.loads(raw)
-        except Exception:
-            rows = []
-        if not isinstance(rows, list) or not rows:
+        text = str(ctx.user_input)
+        rows = []
+        seen_keys = set()
+        for keyword in self._fallback_keywords(text):
+            raw = _get_mcp_config_by_keyword(
+                keyword,
+                user_id=getattr(ctx, "user_id", None),
+                tenant_id=getattr(ctx, "tenant_id", None),
+                agent_id=getattr(ctx, "agent_id", None),
+            )
+            try:
+                found = json.loads(raw)
+            except Exception:
+                found = []
+            if not isinstance(found, list):
+                continue
+            for row in found:
+                if not isinstance(row, dict):
+                    continue
+                key = (
+                    str(row.get("name") or ""),
+                    str(row.get("transport") or ""),
+                    str(row.get("command") or ""),
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                rows.append(row)
+        if not rows:
             return None
         items = []
+        chain = []
         for row in rows[:3]:
             if not isinstance(row, dict):
                 continue
@@ -135,11 +210,17 @@ class PlannerHandler(Handler):
             args = row.get("args") if isinstance(row.get("args"), list) else []
             if name and transport and command:
                 items.append(MCPConfigItem(name=name, transport=transport, command=command, args=args))
+                for tool_name in self._tool_names_for_row(row, text):
+                    if tool_name not in chain:
+                        chain.append(tool_name)
         if not items:
             return None
-        chain = [item.name for item in items]
+        if not chain:
+            chain = [item.name for item in items]
         instructions = (
             "Planner 结构化输出不可用，已根据 MCP 检索结果生成兜底计划："
-            f"按顺序调用 {', '.join(chain)}，将用户原始输入作为工具查询内容，并汇总工具返回结果。"
+            f"按顺序调用 {', '.join(chain)}。"
+            "从用户输入中提取收件人、标题、正文等参数；如用户要求优化、润色或改写文本，"
+            "先完成文本整理后再作为工具输入，并汇总工具返回结果。"
         )
         return WorkflowPlan(execution_chain=chain, mcp_config=items, instructions=instructions)

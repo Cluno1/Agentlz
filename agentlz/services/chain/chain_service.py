@@ -33,7 +33,7 @@ class ChainContext:
         self.ai_agent_config_map: Dict[str, Any] = {}
         self.execution_history: str = ""
         self.current_task: str = ""
-        self.max_step: int = 6
+        self.max_step: int = 12
         self.session_id: Optional[str] = None
         self.tenant_id: Optional[str] = None
         self.agent_id: Optional[int] = None
@@ -175,7 +175,7 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     # 从 JWT claims 注入当前用户 ID（供 Planner 检索个人 MCP）
     ctx.user_id = int(claims.get("sub")) if isinstance(claims, dict) and str(claims.get("sub", "")).isdigit() else None
     s = get_settings()
-    user_max = int(max_steps or 6)
+    user_max = int(max_steps or getattr(s, "chain_default_steps", 12))
     hard_limit = int(getattr(s, "chain_hard_limit", 20))
     ctx.max_step = min(user_max, hard_limit)
     ctx.tenant_id = tenant_id

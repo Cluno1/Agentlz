@@ -24,6 +24,8 @@ def get_model(settings: Settings, streaming: bool = False) -> ChatOpenAI:
         "model": settings.model_name,
         "temperature": settings.model_temperature,
         "streaming": streaming,
+        "timeout": float(getattr(settings, "model_request_timeout", 60.0) or 60.0),
+        "max_retries": int(getattr(settings, "model_max_retries", 1) or 1),
     }
     
     if settings.chatopenai_api_key and settings.chatopenai_base_url:
@@ -70,6 +72,8 @@ def get_model_by_name(
         "model": model_name or settings.model_name,
         "temperature": settings.model_temperature,
         "streaming": streaming,
+        "timeout": float(getattr(settings, "model_request_timeout", 60.0) or 60.0),
+        "max_retries": int(getattr(settings, "model_max_retries", 1) or 1),
     }
 
     if chatopenai_api_key and chatopenai_base_url:

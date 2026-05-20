@@ -109,6 +109,7 @@ def to_tool_config(row: Dict[str, Any]) -> Dict[str, Any]:
         "transport": transport,
         "command": command,
         "args": args,
+        "description": str(row.get("description") or ""),
     }
 
 

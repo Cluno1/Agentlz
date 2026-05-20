@@ -124,7 +124,7 @@ def _current_user_id(claims: Optional[Dict[str, Any]]) -> int:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
 
 
-def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[str, Any], agent_id: int, max_steps: int = 6) -> Iterator[str]:
+def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[str, Any], agent_id: int, max_steps: int = 12) -> Iterator[str]:
     from agentlz.services.chain.chain_service import stream_chain_generator
 
     q: "queue.Queue[Any]" = queue.Queue()
@@ -379,6 +379,7 @@ def create_agent_service(*, payload: Dict[str, Any], tenant_id: str, claims: Opt
     m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
     m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
     r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+    r["mcp_agent_ids"] = [int(x["id"]) for x in m_rows]
     rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
     doc_items: List[Dict[str, Any]] = []
     for rel in rel_d:
@@ -512,6 +513,7 @@ def update_agent_basic_service(*, agent_id: int, payload: Dict[str, Any], tenant
         m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
         m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
         r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+        r["mcp_agent_ids"] = [int(x["id"]) for x in m_rows]
         rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
         doc_items: List[Dict[str, Any]] = []
         for rel in rel_d:
@@ -687,6 +689,7 @@ def list_agents_service(
         mcp_ids = [x for x in mcp_ids_str.split(sep) if x] if mcp_ids_str else []
         mcp_names = [x for x in mcp_names_str.split(sep) if x] if mcp_names_str else []
         r["mcp_agents"] = [{"id": int(mcp_ids[i]), "name": mcp_names[i] if i < len(mcp_names) else ""} for i in range(len(mcp_ids))]
+        r["mcp_agent_ids"] = [int(x) for x in mcp_ids]
         doc_ids = [x for x in doc_ids_str.split(sep) if x] if doc_ids_str else []
         doc_titles = [x for x in doc_titles_str.split(sep) if x] if doc_titles_str else []
         strategy_by_doc: Dict[str, Any] = {}
@@ -772,6 +775,7 @@ def list_accessible_agents_service(
         m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
         r["mcp_agents"] = [{"id": int(x["id"]), "name": str(
             x.get("name") or "")} for x in m_rows]
+        r["mcp_agent_ids"] = [int(x["id"]) for x in m_rows]
         rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()[
                                                   "agent_document"]) if r.get("id") is not None else []
         doc_items: List[Dict[str, Any]] = []
@@ -816,6 +820,7 @@ def get_agent_service(*, agent_id: int, tenant_id: str, claims: Optional[Dict[st
     m_ids = [int(x.get("mcp_agent_id")) for x in rel_m if x.get("mcp_agent_id") is not None]
     m_rows = mcp_repo.get_mcp_agents_by_ids(m_ids) if m_ids else []
     r["mcp_agents"] = [{"id": int(x["id"]), "name": str(x.get("name") or "")} for x in m_rows]
+    r["mcp_agent_ids"] = [int(x["id"]) for x in m_rows]
     rel_d = doc_rel_repo.list_agent_documents(agent_id=int(r.get("id")), table_name=_tables()["agent_document"]) if r.get("id") is not None else []
     doc_items: List[Dict[str, Any]] = []
     for rel in rel_d:
@@ -1708,7 +1713,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
                     tenant_id=tenant_id,
                     claims=claims,
                     agent_id=int(agent_id),
-                    max_steps=6,
+                    max_steps=12,
                 )
             else:
                 yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)

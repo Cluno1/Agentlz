@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     event_schema_version: str = Field(default="v1", env="EVENT_SCHEMA_VERSION")
 
     chain_hard_limit: int = Field(default=20, env="CHAIN_HARD_LIMIT")
+    chain_default_steps: int = Field(default=12, env="CHAIN_DEFAULT_STEPS")
+    chain_planner_timeout: float = Field(default=60.0, env="CHAIN_PLANNER_TIMEOUT")
+    model_request_timeout: float = Field(default=60.0, env="MODEL_REQUEST_TIMEOUT")
+    model_max_retries: int = Field(default=1, env="MODEL_MAX_RETRIES")
 
     # SSE 流式输出缓冲阈值
     sse_flush_ms: float = Field(default=0.08, env="SSE_FLUSH_MS")

@@ -1,11 +1,14 @@
 from __future__ import annotations
 import json
+import asyncio
 from agentlz.services.chain.handler import Handler
 from agentlz.services.chain.chain_service import ChainContext, get_chain_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import ToolMessage
 from agentlz.core.model_factory import get_model
 from agentlz.core.logger import setup_logging
 from agentlz.config.settings import get_settings
@@ -58,9 +61,37 @@ def _normalize_stdio_args(args):
 
 # 执行节点（ExecutorHandler）说明：
 # - 根据规划（ctx.plan）调用执行器，运行 MCP 工具链；
-# - 将“工具调用摘要 + 最终结果”写入 ctx.fact_msg，并记录步骤；
+# - 将"工具调用摘要 + 最终结果"写入 ctx.fact_msg，并记录步骤；
 # - 同步把每次工具调用的结构化日志（name/status/input/output）追加进 ctx.steps，便于审计与校验展示；
 # - 下一步路由到校验节点（CheckHandler）。
+
+class ToolTimeoutMiddleware(AgentMiddleware):
+    """限制工具调用耗时，并保护副作用工具不被同一轮重复执行。"""
+
+    def __init__(self, timeout: float = 30.0, single_call_tools: set[str] | None = None):
+        super().__init__()
+        self.timeout = timeout
+        self.single_call_tools = set(single_call_tools or set())
+        self._called_single_tools: set[str] = set()
+
+    async def awrap_tool_call(self, request: ToolCallRequest, handler):
+        tool_name = (request.tool_call or {}).get("name", "unknown")
+        tool_call_id = (request.tool_call or {}).get("id", "")
+        if tool_name in self.single_call_tools:
+            if tool_name in self._called_single_tools:
+                return ToolMessage(
+                    content=f"工具 {tool_name} 已在本次执行中调用过，重复调用已跳过。",
+                    tool_call_id=tool_call_id,
+                )
+            self._called_single_tools.add(tool_name)
+        try:
+            return await asyncio.wait_for(handler(request), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            return ToolMessage(
+                content=f"工具 {tool_name} 调用超时（>{self.timeout}s），已跳过。",
+                tool_call_id=tool_call_id,
+            )
+
 
 class ExecutorHandler(Handler):
     """执行节点
@@ -146,7 +177,9 @@ class ExecutorHandler(Handler):
             ctx.stop_chain = True
             self.send_sse(ctx, "executor.error", {"stage": "tools", "message": msg})
             return
-        if await self._try_direct_search_execution(ctx, tools):
+        chain = getattr(plan, "execution_chain", []) or []
+        is_only_search = len(chain) == 1 and chain[0] == "search"
+        if is_only_search and await self._try_direct_search_execution(ctx, tools):
             return
 
         settings = get_settings()
@@ -161,11 +194,17 @@ class ExecutorHandler(Handler):
             template_msgs.append(("system", "{instructions}"))
         template_msgs.append(("human", "{input}"))
         prompt = ChatPromptTemplate.from_messages(template_msgs)
-        agent = create_agent(model=llm, tools=tools, system_prompt=system_prompt, response_format=ExecutorTrace)
+        agent = create_agent(
+            model=llm,
+            tools=tools,
+            system_prompt=system_prompt,
+            middleware=[ToolTimeoutMiddleware(timeout=30, single_call_tools={"send_mail"})],
+            response_format=ExecutorTrace,
+        )
         formatted = prompt.format_messages(input=str(ctx.user_input), instructions=instr)
         # 工具回调发射器：在工具开始/结束时触发 `call.start`/`call.end` 事件
         handler = _ToolLogHandler(lambda evt, payload: self.send_sse(ctx, evt, payload))
-        resp = await agent.ainvoke({"messages": formatted}, config={"callbacks": [handler]})
+        resp = await asyncio.wait_for(agent.ainvoke({"messages": formatted}, config={"callbacks": [handler]}), timeout=180)
         final_text = resp["messages"][-1].content if isinstance(resp, dict) else str(resp)
         logs = getattr(handler, "calls", [])
         if isinstance(resp, dict) and resp.get("structured_response") is not None:

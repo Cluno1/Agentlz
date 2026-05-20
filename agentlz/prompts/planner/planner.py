@@ -15,7 +15,12 @@ PLANNER_SYSTEM_PROMPT = """
 - 以 `trust_score` 高优先选择工具；若多工具满足，可组合成多步链路。
 - `mcp_config[*].name` 必须与所选工具名一致；`transport/command/args` 使用查询结果原值，不臆造。
 - 不修改 `args` 路径文本；保持原样返回（由执行器在运行时解析路径）。
-- `execution_chain` 列表中的元素为将要调用的工具名称，按执行顺序排列。
+- `execution_chain` 列表中的元素为将要调用的**具体工具名称**（如 "search"、"send_mail"），而非 MCP 服务名（如 "open-websearch"）。
+- 从 description 中提取工具名：
+  - 检索结果中的 `description` 字段包含该 MCP 提供的具体工具列表（如 "工具：search 搜索、fetchWebContent 抓正文"）。
+  - 你必须阅读 description，找出其中列出的工具名。
+  - 只把用户任务实际需要的工具填入 execution_chain，不要填入无关工具。
+  - 示例：若 description 为 "工具：search 搜索、fetchWebContent 抓正文"，且用户只需搜索 + 发邮件，则 execution_chain 应为 ["search", "send_mail"]。
 
 指示编写（instructions）：
 - 用分步中文说明每一步要做什么、调用哪个工具、输入是什么、输出如何传递到下一步。
