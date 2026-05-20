@@ -253,7 +253,7 @@ class ExecutorHandler(Handler):
         formatted = prompt.format_messages(input=str(ctx.user_input), instructions=instr)
         # 工具回调发射器：在工具开始/结束时触发 `call.start`/`call.end` 事件
         handler = _ToolLogHandler(lambda evt, payload: self.send_sse(ctx, evt, payload))
-        resp = await asyncio.wait_for(agent.ainvoke({"messages": formatted}, config={"callbacks": [handler], "recursion_limit": 10}), timeout=60)
+        resp = await asyncio.wait_for(agent.ainvoke({"messages": formatted}, config={"callbacks": [handler], "recursion_limit": 10}), timeout=180)
         final_text = resp["messages"][-1].content if isinstance(resp, dict) else str(resp)
         logs = getattr(handler, "calls", [])
         if isinstance(resp, dict) and resp.get("structured_response") is not None:

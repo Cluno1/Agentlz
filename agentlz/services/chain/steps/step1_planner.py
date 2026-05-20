@@ -99,7 +99,7 @@ class PlannerHandler(Handler):
         user_msg = formatted_msgs[-1]
         # 异步调用代理，更契合步骤的异步上下文
         try:
-            planner_timeout = float(getattr(settings, "chain_planner_timeout", 60.0) or 60.0)
+            planner_timeout = float(getattr(settings, "chain_planner_timeout", 120.0) or 120.0)
             response = await asyncio.wait_for(
                 agent.ainvoke({"messages": [user_msg]}),
                 timeout=planner_timeout,
