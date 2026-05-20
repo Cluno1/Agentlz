@@ -68,11 +68,12 @@ def _normalize_stdio_args(args):
 class ToolTimeoutMiddleware(AgentMiddleware):
     """限制工具调用耗时，并保护副作用工具不被同一轮重复执行。"""
 
-    def __init__(self, timeout: float = 30.0, single_call_tools: set[str] | None = None):
+    def __init__(self, timeout: float = 30.0, single_call_tools: set[str] | None = None, called_single_tools: set[str] | None = None):
         super().__init__()
         self.timeout = timeout
         self.single_call_tools = set(single_call_tools or set())
-        self._called_single_tools: set[str] = set()
+        # 共享 set：跨外层 PDC 迭代持续，避免链路重启时副作用工具被重复真实调用
+        self._called_single_tools: set[str] = called_single_tools if called_single_tools is not None else set()
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler):
         tool_name = (request.tool_call or {}).get("name", "unknown")
@@ -109,9 +110,14 @@ class ExecutorHandler(Handler):
             await self._run_executor(ctx)
             await self._summarize_results(ctx)
             ctx.steps.append({"name": "executor", "status": "passed", "output": ctx.fact_msg})
-        except Exception:
+        except Exception as _exec_err:
+            # 关键：捕获 traceback 落日志；否则 PDC 链回退环路时根因永远查不出
+            setup_logging(get_settings().log_level).exception(
+                f"executor crashed: {type(_exec_err).__name__}: {_exec_err}"
+            )
             ctx.errors.append("executor_failed")
-            ctx.steps.append({"name": "executor", "status": "failed"})
+            ctx.steps.append({"name": "executor", "status": "failed", "output": {"error": str(_exec_err)}})
+            self.send_sse(ctx, "executor.error", {"stage": "handle", "message": str(_exec_err)})
         return await super().handle(ctx)
 
     def next(self, ctx: ChainContext) -> Handler | None:
@@ -198,7 +204,15 @@ class ExecutorHandler(Handler):
             model=llm,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[ToolTimeoutMiddleware(timeout=30, single_call_tools={"send_mail"})],
+            middleware=[ToolTimeoutMiddleware(
+                timeout=30,
+                single_call_tools={"send_mail"},
+                # ctx 是 dataclass-like 对象，没有 setdefault，直接用 __dict__ 兜底持久化
+                called_single_tools=(
+                    getattr(ctx, "_called_single_tools", None)
+                    or ctx.__dict__.setdefault("_called_single_tools", set())
+                ),
+            )],
             response_format=ExecutorTrace,
         )
         formatted = prompt.format_messages(input=str(ctx.user_input), instructions=instr)
