@@ -31,5 +31,19 @@ PLANNER_SYSTEM_PROMPT = """
 
 约束：
 - 字段名与大小写必须完全匹配；路径与参数保持查询结果原样。
+
+输出格式（严格要求）：
+- 最终回复**必须**是单个 JSON 对象，且不要被任何 Markdown 代码块（```json）、解释性文字或自然语言段落包围。
+- JSON 结构示例：
+{{
+  "execution_chain": ["工具名1", "工具名2"],
+  "mcp_config": [
+    {{"name": "服务名", "transport": "http|sse|stdio", "command": "...", "args": ["..."]}}
+  ],
+  "instructions": "分步中文说明..."
+}}
+- 字段缺省：execution_chain / mcp_config 缺省为空数组 []；instructions 缺省为空字符串 ""。
+- transport / command / args 必须取自 search_mcp 工具返回的原值；不要臆造或改写路径。
+- 仅输出 JSON 本体，前后不要附加任何文字。
 """
 

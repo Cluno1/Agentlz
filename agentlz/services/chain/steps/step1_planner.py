@@ -3,7 +3,7 @@ import asyncio
 import json
 import re
 from agentlz.services.chain.handler import Handler
-from agentlz.services.chain.chain_service import ChainContext, get_chain_model
+from agentlz.services.chain.chain_service import ChainContext, get_chain_model, build_chain_reference_context
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
 from agentlz.core.model_factory import get_model
@@ -92,10 +92,24 @@ class PlannerHandler(Handler):
         prompt = ChatPromptTemplate.from_messages([("system", PLANNER_SYSTEM_PROMPT), ("human", "{user_input}")])
         # 注册可调用工具：从关键词解析 MCP 配置
         tools = [make_mcp_keyword_tool(getattr(ctx, "user_id", None), getattr(ctx, "tenant_id", None), getattr(ctx, "agent_id", None))]
-        # 创建代理，指定返回结构化 `WorkflowPlan`
-        agent = create_agent(model=llm, tools=tools, system_prompt=PLANNER_SYSTEM_PROMPT, response_format=WorkflowPlan)
+        # 不传 response_format：避免 LangChain 内部为强制结构化输出而注入 tool_choice="required"
+        # —— DeepSeek v4 等模型在 tool_choice="required" 时返回 400（"does not support this
+        # tool_choice"），即便 model 字段是 v4-flash，服务端报错仍硬编码 "deepseek-reasoner"。
+        # 改为由 prompt 指令引导 LLM 直接输出 JSON，下面 _parse_workflow_plan_from_messages
+        # 手动解析；解析失败走 _fallback_plan_from_mcp。
+        agent = create_agent(model=llm, tools=tools, system_prompt=PLANNER_SYSTEM_PROMPT)
         # 格式化对话，取最后一条人类消息作为输入
-        formatted_msgs = prompt.format_messages(user_input=str(ctx.user_input))
+        planner_input = str(ctx.user_input)
+        reference_context = build_chain_reference_context(ctx, history_limit=3000, doc_limit=5000)
+        if reference_context:
+            planner_input = (
+                "用户任务：\n"
+                + planner_input
+                + "\n\n以下是可选参考上下文。只有当用户任务需要历史或知识库信息时才使用；"
+                "不要把参考上下文当作 MCP 工具配置，也不要从其中臆造工具。\n"
+                + reference_context
+            )
+        formatted_msgs = prompt.format_messages(user_input=planner_input)
         user_msg = formatted_msgs[-1]
         # 异步调用代理，更契合步骤的异步上下文
         try:
@@ -116,13 +130,75 @@ class PlannerHandler(Handler):
                 logger.warning(f"planner model failed, using MCP fallback: {e}")
                 return fallback
             raise
-        if isinstance(response, dict) and response.get("structured_response") is not None:
-            return response["structured_response"]
+        # 从 agent 返回中提取最后一条 AI 文本，按 prompt 约定解析为 WorkflowPlan
+        plan = self._parse_workflow_plan_from_messages(response, logger)
+        if plan is not None:
+            return plan
         fallback = self._fallback_plan_from_mcp(ctx)
         if fallback is not None:
-            logger.warning("planner model did not return structured_response, using MCP fallback")
+            logger.warning("planner LLM 输出无法解析为结构化计划，使用 MCP 兜底")
             return fallback
         return WorkflowPlan(execution_chain=[], mcp_config=[], instructions="计划生成失败：未返回结构化计划。")
+
+    def _parse_workflow_plan_from_messages(self, response: object, logger) -> WorkflowPlan | None:
+        """从 create_agent 返回中提取最后一条 AI 文本消息，解析为 WorkflowPlan。
+
+        宽容处理：
+        - LLM 可能用 ```json ... ``` 包裹；或在 JSON 前后输出说明性文字。
+        - 抠出第一个 `{` 到最后一个 `}` 的子串再 json.loads。
+        - 任一环节失败返回 None，由调用方走 fallback。
+        """
+        messages = []
+        if isinstance(response, dict):
+            messages = response.get("messages") or []
+        elif hasattr(response, "messages"):
+            messages = getattr(response, "messages", []) or []
+        if not messages:
+            return None
+        final_text = ""
+        for msg in reversed(messages):
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                msg_type = msg.get("type") or msg.get("role") or ""
+            else:
+                content = getattr(msg, "content", None)
+                msg_type = getattr(msg, "type", None) or getattr(msg, "role", None) or ""
+            if msg_type in ("ai", "assistant") and isinstance(content, str) and content.strip():
+                final_text = content.strip()
+                break
+        if not final_text:
+            return None
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", final_text, re.DOTALL)
+        candidate = m.group(1) if m else final_text
+        s, e = candidate.find("{"), candidate.rfind("}")
+        if s < 0 or e <= s:
+            return None
+        try:
+            data = json.loads(candidate[s:e + 1])
+        except Exception as ex:
+            logger.warning(f"planner JSON 解析失败: {ex}; preview={final_text[:200]!r}")
+            return None
+        if not isinstance(data, dict):
+            return None
+        try:
+            items = []
+            for it in (data.get("mcp_config") or []):
+                if not isinstance(it, dict):
+                    continue
+                items.append(MCPConfigItem(
+                    name=str(it.get("name") or ""),
+                    transport=str(it.get("transport") or ""),
+                    command=str(it.get("command") or ""),
+                    args=[str(x) for x in (it.get("args") or [])],
+                ))
+            return WorkflowPlan(
+                execution_chain=[str(x) for x in (data.get("execution_chain") or [])],
+                mcp_config=items,
+                instructions=str(data.get("instructions") or ""),
+            )
+        except Exception as ex:
+            logger.warning(f"planner WorkflowPlan 构造失败: {ex}")
+            return None
 
     def _fallback_keywords(self, text: str) -> list[str]:
         candidates = [text]
@@ -205,11 +281,52 @@ class PlannerHandler(Handler):
             if not isinstance(row, dict):
                 continue
             name = str(row.get("name") or "")
-            transport = str(row.get("transport") or "")
-            command = str(row.get("command") or "")
-            args = row.get("args") if isinstance(row.get("args"), list) else []
+            transport = str(row.get("transport") or "").lower()
+            command_raw = str(row.get("command") or "")
+            args_raw = row.get("args")
+
+            # DB 里 mcp_agents.command 实际只是 "http"/"sse"/"stdio" 标签；
+            # URL/真正命令藏在 args（JSON 字符串）里。Executor 期望 command 直接含 URL（对 http/sse）
+            # 或可执行命令（对 stdio）。下面按 transport 解析：
+            command = ""
+            args_list = []
+            if transport in ("http", "sse"):
+                # args 形如 '{"mail":{"type":"http","url":"http://..."}}' 或同形 dict
+                parsed = args_raw
+                if isinstance(parsed, str):
+                    try:
+                        parsed = json.loads(parsed)
+                    except Exception:
+                        parsed = None
+                url = None
+                if isinstance(parsed, dict):
+                    # 优先按 name 取嵌套对象的 url；否则任取一个对象的 url
+                    inner = parsed.get(name) if name in parsed else next(iter(parsed.values()), None)
+                    if isinstance(inner, dict):
+                        url = inner.get("url") or inner.get("URL")
+                if url:
+                    command = str(url)
+                    args_list = [str(url)]
+            elif transport == "stdio":
+                # args 形如 '["mcpstore-cli", "run", "https://..."]' 或同形 list
+                parsed = args_raw
+                if isinstance(parsed, str):
+                    try:
+                        parsed = json.loads(parsed)
+                    except Exception:
+                        parsed = None
+                if isinstance(parsed, list):
+                    args_list = [str(x) for x in parsed]
+                # stdio 的 command 沿用 DB 字段（如 "uvx" / "npx"），若为空且 args 有内容则取首位
+                command = command_raw if command_raw and command_raw not in ("stdio",) else (args_list[0] if args_list else "")
+            else:
+                # 未知 transport：保守沿用 DB 原值
+                command = command_raw
+                if isinstance(args_raw, list):
+                    args_list = [str(x) for x in args_raw]
+
             if name and transport and command:
-                items.append(MCPConfigItem(name=name, transport=transport, command=command, args=args))
+                items.append(MCPConfigItem(name=name, transport=transport, command=command, args=args_list))
                 for tool_name in self._tool_names_for_row(row, text):
                     if tool_name not in chain:
                         chain.append(tool_name)

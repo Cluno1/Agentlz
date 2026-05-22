@@ -50,9 +50,15 @@ class CheckHandler(Handler):
         return await super().handle(ctx)
 
     def next(self, ctx: ChainContext) -> Handler | None:
-        """通过则结束；不通过则清理计划并回到规划节点"""
-        # 检查通过则终止链路；否则清理旧计划并回到规划节点
+        """通过则结束；不通过则清理计划并回到规划节点（重规划次数封顶 1 次）"""
+        # 检查通过则终止链路
         if _is_check_passed(ctx.check_result):
+            return None
+        # 重规划次数封顶：至多回 Planner 1 次（即整链最多走 2 轮 P→E→C）
+        # 防御性兜底，避免 Check 偶发误判时 planner↔check 无限循环烧 token。
+        replan_count = getattr(ctx, "replan_count", 0) + 1
+        ctx.replan_count = replan_count
+        if replan_count > 1:
             return None
         from agentlz.services.chain.steps.step1_planner import PlannerHandler
         ctx.plan = None

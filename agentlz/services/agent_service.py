@@ -124,7 +124,19 @@ def _current_user_id(claims: Optional[Dict[str, Any]]) -> int:
         raise HTTPException(status_code=401, detail="无法获取用户身份信息")
 
 
-def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[str, Any], agent_id: int, max_steps: int = 12) -> Iterator[str]:
+def _iter_async_chain_stream(
+    *,
+    user_input: str,
+    tenant_id: str,
+    claims: Dict[str, Any],
+    agent_id: int,
+    max_steps: int = 12,
+    rag_history: str = "",
+    rag_doc: str = "",
+    rag_messages: Optional[List[str]] = None,
+    record_id: Optional[int] = None,
+    is_observation: bool = False,
+) -> Iterator[str]:
     from agentlz.services.chain.chain_service import stream_chain_generator
 
     q: "queue.Queue[Any]" = queue.Queue()
@@ -142,6 +154,11 @@ def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[st
                     claims=claims,
                     max_steps=max_steps,
                     agent_id=agent_id,
+                    rag_history=rag_history,
+                    rag_doc=rag_doc,
+                    rag_messages=rag_messages,
+                    record_id=record_id,
+                    is_observation=is_observation,
                 ):
                     q.put(frame)
 
@@ -162,6 +179,39 @@ def _iter_async_chain_stream(*, user_input: str, tenant_id: str, claims: Dict[st
         if item is done:
             break
         yield item
+
+
+def _extract_final_text_from_sse_frame(frame: str) -> str:
+    """Extract final payload text from one structured SSE frame."""
+    data_lines: List[str] = []
+    for line in str(frame or "").splitlines():
+        if line.startswith("data:"):
+            data_lines.append(line.replace("data:", "", 1).lstrip())
+    if not data_lines:
+        return ""
+    raw = "\n".join(data_lines).strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return ""
+    if not isinstance(parsed, dict) or str(parsed.get("evt") or "") != "final":
+        return ""
+    payload = parsed.get("payload")
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("text", "content", "message"):
+            value = payload.get(key)
+            if value is not None:
+                return str(value)
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return str(payload)
 
 
 def _is_system_admin(user: Optional[Dict[str, Any]]) -> bool:
@@ -986,6 +1036,69 @@ def persist_chat_to_cache_and_mq(*, agent_id: int, record_id: int, input_text: s
     logger.debug(f"完成 [persist_chat_to_cache_and_mq] key={key}")
 
 
+def _persist_session_sync(
+    *,
+    agent_id: int,
+    record_id: int,
+    request_id: str,
+    input_text: str,
+    output_text: str,
+) -> None:
+    """Persist one completed chat turn synchronously for history/continuation."""
+    if int(record_id) <= 0:
+        return
+    if not str(output_text or "").strip():
+        return
+    logger = setup_logging(level="DEBUG", name="agentlz.agent_service", prefix="[Agent 服务]")
+    try:
+        s = get_settings()
+        sess_table = getattr(s, "session_table_name", "session")
+        meta_input = {"text": str(input_text or "")}
+        meta_output = {"text": str(output_text or "")}
+        sess_row, created = sess_repo.create_session_idempotent(
+            record_id=int(record_id),
+            request_id=str(request_id),
+            meta_input=meta_input,
+            meta_output=meta_output,
+            table_name=sess_table,
+        )
+        sid = int(sess_row.get("id") or 0)
+        if sid <= 0:
+            return
+        item = {
+            "session_id": sid,
+            "count": int(sess_row.get("count") or 0),
+            "input": meta_input,
+            "output": meta_output,
+            "zip": str(sess_row.get("zip") or ""),
+            "zip_status": str(sess_row.get("zip_status") or "pending"),
+            "created_at": str(sess_row.get("created_at") or ""),
+        }
+        if created:
+            chat_history_append(
+                record_id=int(record_id),
+                session_id=sid,
+                item=item,
+                ttl=3600,
+                limit=50,
+            )
+            publish_to_rabbitmq(
+                "zip_tasks",
+                {
+                    "session_id": sid,
+                    "record_id": int(record_id),
+                    "agent_id": int(agent_id),
+                    "request_id": str(request_id),
+                },
+                durable=True,
+            )
+            _maybe_publish_record_aggregate(agent_id=int(agent_id), record_id=int(record_id))
+        else:
+            chat_history_set_item(record_id=int(record_id), session_id=sid, item=item, ttl=3600)
+    except Exception as e:
+        logger.warning(f"sync session persist failed: {e}")
+
+
 def _maybe_publish_record_aggregate(*, agent_id: int, record_id: int, threshold: int = 5) -> None:
     """
     当某条记录新增会话达到阈值时，发布 record 级总压缩任务。
@@ -1617,19 +1730,7 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
     if bool(is_observation):
         logger.debug(f"观测模式开启，record_id={record_id}")
     rag_start = time.time()
-    if stream_mode == "exe":
-        if int(record_id) <= 0:
-            try:
-                created = record_repo.create_record(
-                    payload={"agent_id": int(agent_id), "name": str(message or ""), "meta": meta_for_record},
-                    table_name=getattr(get_settings(), "record_table_name", "record"),
-                )
-                record_id = int(created.get("id") or record_id)
-            except Exception:
-                pass
-        out = {"doc": "", "history": "", "message": str(message or ""), "record_id": int(record_id), "messages": [str(message or "")]}
-    else:
-        out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
+    out = agent_chat_get_rag(agent_id=agent_id, message=message, record_id=record_id, meta=meta_for_record)
     rag_end = time.time()
     rag_time_ms = int((rag_end - rag_start) * 1000)
     try:
@@ -1708,13 +1809,33 @@ def agent_chat_service(*, agent_id: int, message: str, record_id: int = -1, meta
                 except Exception:
                     pass
                 claims = {"sub": str(user_id or "")}
-                yield from _iter_async_chain_stream(
+                final_parts: List[str] = []
+                rag_messages = out.get("messages") if isinstance(out.get("messages"), list) else []
+                for frame in _iter_async_chain_stream(
                     user_input=str(message or ""),
                     tenant_id=tenant_id,
                     claims=claims,
                     agent_id=int(agent_id),
                     max_steps=12,
-                )
+                    rag_history=str(out.get("history") or ""),
+                    rag_doc=str(out.get("doc") or ""),
+                    rag_messages=rag_messages,
+                    record_id=int(record_id) if record_id is not None else None,
+                    is_observation=bool(is_observation),
+                ):
+                    final_text = _extract_final_text_from_sse_frame(frame)
+                    if final_text.strip():
+                        final_parts.append(final_text)
+                    yield frame
+                final_text = "\n".join(x.strip() for x in final_parts if x.strip()).strip()
+                if final_text:
+                    _persist_session_sync(
+                        agent_id=int(agent_id),
+                        record_id=int(record_id),
+                        request_id=str(req_id),
+                        input_text=str(message or ""),
+                        output_text=final_text,
+                    )
             else:
                 yield from agent_llm_answer_stream(agent_id=int(agent_id), record_id=int(record_id), is_observation=bool(is_observation), out=out, meta=meta)
         finally:

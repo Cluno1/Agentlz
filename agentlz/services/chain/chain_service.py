@@ -32,14 +32,46 @@ class ChainContext:
         self.tool_calls: List[Dict[str, Any]] = []
         self.ai_agent_config_map: Dict[str, Any] = {}
         self.execution_history: str = ""
+        self.rag_history: str = ""
+        self.rag_doc: str = ""
+        self.rag_messages: List[str] = []
         self.current_task: str = ""
         self.max_step: int = 12
         self.session_id: Optional[str] = None
         self.tenant_id: Optional[str] = None
         self.agent_id: Optional[int] = None
+        self.record_id: Optional[int] = None
+        self.is_observation: bool = False
 
 
+def _clip_context_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if limit > 0 and len(text) > limit:
+        return text[:limit].rstrip() + "\n...[已截断]"
+    return text
 
+
+def build_chain_reference_context(
+    ctx: ChainContext,
+    *,
+    include_history: bool = True,
+    include_doc: bool = True,
+    history_limit: int = 4000,
+    doc_limit: int = 8000,
+) -> str:
+    """Format optional chat history and RAG docs for chain LLM steps."""
+    sections: List[str] = []
+    if include_history:
+        history = _clip_context_text(getattr(ctx, "rag_history", ""), history_limit)
+        if history:
+            sections.append("【历史上下文】\n" + history)
+    if include_doc:
+        doc = _clip_context_text(getattr(ctx, "rag_doc", ""), doc_limit)
+        if doc:
+            sections.append("【知识库候选文档】\n" + doc)
+    return "\n\n".join(sections)
 
 
 def _is_check_passed(res: Any) -> bool:
@@ -48,7 +80,8 @@ def _is_check_passed(res: Any) -> bool:
     兼容常见返回结构：
     - 仅依据 judge/score 字段：
       - judge 为 True 视为通过
-      - 或 score 数值 ≥ 80 视为通过
+      - 或 score 数值 ≥ 60 视为通过
+        （阈值从 80 → 60：配合新版 Check prompt（工具调用核对员）的"调成 60 分即通过"语义）
     """
     try:
         if res is None:
@@ -60,13 +93,13 @@ def _is_check_passed(res: Any) -> bool:
                 return j
             sc = res.get("score")
             if isinstance(sc, (int, float)):
-                return sc >= 80
+                return sc >= 60
             return False
         # 情况2：返回为对象结构（如 CheckOutput 实例）——仅读取 judge/score
         if hasattr(res, "judge") and isinstance(getattr(res, "judge"), bool):
             return getattr(res, "judge")
         if hasattr(res, "score") and isinstance(getattr(res, "score"), (int, float)):
-            return getattr(res, "score") >= 80
+            return getattr(res, "score") >= 60
     except Exception:
         return False
     return False
@@ -109,7 +142,19 @@ def get_chain_model(ctx: ChainContext, *, streaming: bool = False):
     return get_model(settings, streaming=streaming)
 
 
-async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dict[str, Any], max_steps: Optional[int] = None, agent_id: Optional[int] = None):
+async def stream_chain_generator(
+    *,
+    user_input: str,
+    tenant_id: str,
+    claims: Dict[str, Any],
+    max_steps: Optional[int] = None,
+    agent_id: Optional[int] = None,
+    rag_history: str = "",
+    rag_doc: str = "",
+    rag_messages: Optional[List[str]] = None,
+    record_id: Optional[int] = None,
+    is_observation: bool = False,
+):
     """
     SSE 事件流生成器（异步生成器）。
 
@@ -172,6 +217,11 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     ctx = ChainContext(user_input)
     ctx.current_task = str(user_input)
     ctx.sse_emitter = emit
+    ctx.rag_history = str(rag_history or "")
+    ctx.rag_doc = str(rag_doc or "")
+    ctx.rag_messages = list(rag_messages or [])
+    if ctx.rag_history:
+        ctx.execution_history = ctx.rag_history
     # 从 JWT claims 注入当前用户 ID（供 Planner 检索个人 MCP）
     ctx.user_id = int(claims.get("sub")) if isinstance(claims, dict) and str(claims.get("sub", "")).isdigit() else None
     s = get_settings()
@@ -180,11 +230,20 @@ async def stream_chain_generator(*, user_input: str, tenant_id: str, claims: Dic
     ctx.max_step = min(user_max, hard_limit)
     ctx.tenant_id = tenant_id
     ctx.agent_id = int(agent_id) if agent_id is not None else None
+    try:
+        ctx.record_id = int(record_id) if record_id is not None and int(record_id) > 0 else None
+    except Exception:
+        ctx.record_id = None
+    ctx.is_observation = bool(is_observation)
 
     # 若用户请求的步数超过系统硬上限：不执行链路，仅推送最终提示并结束
     if user_max > hard_limit:
         final_text = f"请求的最大步数（{user_max}）超过系统硬上限（{hard_limit}），请调小 max_steps 或联系管理员提升上限。"
-        emit("final", final_text)
+        final_payload: Any = final_text
+        artifacts = getattr(ctx, "_artifacts", None) or []
+        if artifacts:
+            final_payload = {"text": final_text, "artifacts": artifacts}
+        emit("final", final_payload)
         q.put_nowait("__END__")
         # 进入统一队列消费，向客户端发送上述两帧后结束
         while True:

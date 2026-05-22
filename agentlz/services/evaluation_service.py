@@ -170,17 +170,14 @@ def _alpaca_items_from_any(raw: Any) -> Tuple[List[Dict[str, Any]], bool]:
     return [{"instruction": "", "input": str(raw or ""), "output": ""}], False
 
 
-def _consume_agent_output(agent_id: int, message: str, user_id: str) -> str:
+def _consume_agent_output(agent_id: int, message: str, user_id: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    调用 Agent 对话链路并提取最终文本输出。
+    调用 Agent 对话链路并提取最终文本输出 + 工具调用记录。
 
-    参数：
-    - agent_id：目标 Agent ID。
-    - message：用户输入文本。
-    - user_id：当前用户ID（字符串）。
-
-    返回：
-    - 聚合后的模型输出文本。
+    返回：(fact_output, tool_calls)
+    - fact_output：聚合后的模型输出文本。
+    - tool_calls：按 (name, server) 配对聚合的工具调用列表，每项形如
+      {name, server, input, output, status}。仅在 chain 路径（exe）下非空。
     """
     gen = agent_service.agent_chat_service(
         agent_id=int(agent_id),
@@ -188,6 +185,7 @@ def _consume_agent_output(agent_id: int, message: str, user_id: str) -> str:
         meta={"user_id": str(user_id)},
     )
     parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
     for chunk in gen:
         if not isinstance(chunk, str):
             continue
@@ -196,17 +194,45 @@ def _consume_agent_output(agent_id: int, message: str, user_id: str) -> str:
                 continue
             data = line.replace("data:", "", 1).strip()
             if data == "[DONE]":
-                return "\n".join(parts).strip()
+                return "\n".join(parts).strip(), tool_calls
             if not data:
                 continue
             try:
                 obj = json.loads(data)
-                if isinstance(obj, dict):
-                    continue
             except Exception:
-                pass
+                obj = None
+            if isinstance(obj, dict):
+                evt = str(obj.get("evt") or "")
+                payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else None
+                if evt == "call.start" and payload:
+                    tool_calls.append({
+                        "name": str(payload.get("name") or ""),
+                        "server": str(payload.get("server") or ""),
+                        "input": str(payload.get("input") or ""),
+                        "output": "",
+                        "status": "start",
+                    })
+                elif evt == "call.end" and payload:
+                    name = str(payload.get("name") or "")
+                    server = str(payload.get("server") or "")
+                    matched = False
+                    for tc in reversed(tool_calls):
+                        if tc.get("status") == "start" and tc.get("name") == name and tc.get("server") == server:
+                            tc["output"] = str(payload.get("output") or "")
+                            tc["status"] = str(payload.get("status") or "success")
+                            matched = True
+                            break
+                    if not matched:
+                        tool_calls.append({
+                            "name": name,
+                            "server": server,
+                            "input": str(payload.get("input") or ""),
+                            "output": str(payload.get("output") or ""),
+                            "status": str(payload.get("status") or "success"),
+                        })
+                continue
             parts.append(data)
-    return "\n".join(parts).strip()
+    return "\n".join(parts).strip(), tool_calls
 
 
 def _publish_ws(topic: str, payload: Dict[str, Any]) -> None:
@@ -701,7 +727,7 @@ def process_evaluation_task(
         if not prompt_text:
             prompt_text = expected
         start_at = time.time()
-        fact_output = _consume_agent_output(agent_id=int(agent_id), message=prompt_text, user_id=str(user_id))
+        fact_output, tool_calls = _consume_agent_output(agent_id=int(agent_id), message=prompt_text, user_id=str(user_id))
         _ = int((time.time() - start_at) * 1000)
         score = 100 if _normalize_text(fact_output) == _normalize_text(expected) and expected else 0
         opinion = "占位评审：输出与期望完全一致，得分100" if score == 100 else "占位评审：输出与期望不一致，得分0"
@@ -712,6 +738,7 @@ def process_evaluation_task(
             "fact_output": fact_output,
             "score": score,
             "opinion": opinion,
+            "tool_calls": tool_calls,
         }
         finished_items.append(result_item)
         completed_count += 1
